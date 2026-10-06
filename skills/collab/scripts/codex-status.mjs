@@ -232,7 +232,7 @@ const SEP = ` ${C.grey}·${C.reset} `
 const RIGHT_MARGIN = 3  // columns kept free at the right edge of the status row
 // Terminal cells a string takes: CJK and full-width characters count 2, ANSI color codes 0.
 const cells = s => [...s.replace(/\x1b\[[0-9;]*m/g, '')]
-  .reduce((n, ch) => n + (/[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]/.test(ch) || ch.codePointAt(0) > 0xffff ? 2 : 1), 0)
+  .reduce((n, ch) => n + (/[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6]/.test(ch) || ch.codePointAt(0) > 0xffff ? 2 : 1), 0)
 const dur = sec => (sec >= 3600 ? `${Math.floor(sec / 3600)}h${String(Math.floor((sec % 3600) / 60)).padStart(2, '0')}m` : `${Math.max(1, Math.round(sec / 60))}m`)
 
 // "● Claude 60% ↻ 2h13m". The dot is green above 50% left, yellow from 20%, red below. All grey = not live.
