@@ -231,13 +231,13 @@ const C = { reset: '\x1b[0m', bold: '\x1b[1m', grey: '\x1b[90m', green: '\x1b[32
 const SEP = ` ${C.grey}·${C.reset} `
 const dur = sec => (sec >= 3600 ? `${Math.floor(sec / 3600)}h${String(Math.floor((sec % 3600) / 60)).padStart(2, '0')}m` : `${Math.max(1, Math.round(sec / 60))}m`)
 
-// "● Claude 60% ↻2h13m". The dot is green above 50% left, yellow from 20%, red below. All grey = not live.
+// "● Claude 60% ↻ 2h13m". The dot is green above 50% left, yellow from 20%, red below. All grey = not live.
 function quotaPart(name, w) {
   if (!w) return null
   const now = Date.now() / 1000
   const reset = !w.resets_at || w.resets_at <= now  // the window has rolled over since this value was seen
   const left = reset ? 100 : Math.max(0, Math.round(100 - w.used))
-  const timer = reset ? '' : ` ↻${dur(w.resets_at - now)}`
+  const timer = reset ? '' : ` ↻ ${dur(w.resets_at - now)}`
   if (w.live === false || reset) return `${C.grey}● ${name} ${left}%${timer}${C.reset}`
   const dot = left > 50 ? C.green : left >= 20 ? C.yellow : C.red
   return `${dot}●${C.reset} ${name} ${C.bold}${left}%${C.reset}${C.grey}${timer}${C.reset}`

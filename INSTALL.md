@@ -85,7 +85,7 @@ Merge these in, and don't overwrite other keys. The user chose global bypass bec
   ```json
   "statusLine": { "type": "command", "command": "node \"C:/Users/<user>/.claude/skills/collab/scripts/codex-status.mjs\" line", "refreshInterval": 10 }
   ```
-  - Every session gets one line: both 5-hour quotas with reset countdowns, plus context use, e.g. `● Claude 60% ↻2h13m · ● Codex 93% ↻4h05m · 上下文 23%`. Grey means a remembered value, not a live one.
+  - Every session gets one line: both 5-hour quotas with reset countdowns, plus context use, e.g. `● Claude 60% ↻ 2h13m · ● Codex 93% ↻ 4h05m · 上下文 23%`. Grey means a remembered value, not a live one.
   - The session that ran `/collab` gets a second line with progress, e.g. `⚙ 阶段2/3 写前端 · 65% · 3子代理`, and logs quota to `.collab/runs/quota.log` for the final report.
 
 The Claude Code `Monitor` tool is not needed: the workflow uses its own background sentinel.
@@ -95,7 +95,7 @@ The Claude Code `Monitor` tool is not needed: the workflow uses its own backgrou
 For each of `collab` and `grilling` in `skills/` (`grilling` is the requirements interview that `/collab` uses):
 - If `%USERPROFILE%\.claude\skills\<name>` doesn't exist, link it. Keep the single quotes so Git Bash doesn't expand `$env`:
   `powershell -NoProfile -Command 'New-Item -ItemType Junction -Path "$env:USERPROFILE\.claude\skills\<name>" -Target "<repo>\skills\<name>"'`
-- If `grilling` already exists, leave it alone.
+- If `grilling` already exists as a plain folder (an upstream copy), replace it with the link: this repo's version is changed to ask questions in Chinese.
 - If `%USERPROFILE%\.claude\skills\grill-me` exists, delete it. It's only a one-line alias for `grilling`, and the user chose to keep just `/grilling`.
 - If `collab` exists as a plain folder (an older copy), ask the user before replacing it.
 
