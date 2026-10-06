@@ -18,7 +18,8 @@ Goal: make `/collab` fully work on this Windows 11 machine in one pass. Go throu
 | git with a commit identity, Node.js ≥ 18, Microsoft Edge | commits, the helper scripts, and Playwright screenshots |
 | Playwright MCP | Claude screenshots the UI |
 | GitHub CLI, logged in | syncing this repo between machines |
-| a status line | shows Codex progress and both quotas, and records quota for the final report |
+| a status line | shows both quotas and context use, and records quota for the final report |
+| the `collab` plugin (in `skills/collab`) | draws /collab progress at the right end of the row under the prompt; loads by itself from the skills folder |
 
 ## 1. Repo location
 
@@ -86,7 +87,10 @@ Merge these in, and don't overwrite other keys. The user chose global bypass bec
   "statusLine": { "type": "command", "command": "node \"C:/Users/<user>/.claude/skills/collab/scripts/codex-status.mjs\" line", "refreshInterval": 10 }
   ```
   - Every session gets one line: both 5-hour quotas with reset countdowns, plus context use, e.g. `● Claude 60% ↻ 2h13m · ● Codex 93% ↻ 4h05m · 上下文：50k  23%`. Grey means a remembered value, not a live one.
-  - The session that ran `/collab` also shows progress, right-aligned on the same row (or on a second row if the terminal is too narrow), e.g. `⚙ 阶段2/3 写前端 · 65% · 3子代理`, and logs quota to `.collab/runs/quota.log` for the final report.
+  - The session that ran `/collab` logs quota to `.collab/runs/quota.log` for the final report. Its progress, e.g. `◆ 阶段2/3 写前端 · 65% · 3子代理`, is drawn by the plugin below.
+- **The `collab` plugin** needs no setup: `skills/collab` holds a plugin of function hooks (`.claude-plugin/`, `hooks/`, `types/`), and Claude Code loads it from the skills folder in every session.
+  - It draws the progress at the right end of the row under the prompt. The engine lays that row out, so it follows the window width at once.
+  - Plugin hooks are early access (tested on Claude Code 2.1.288). If this version can't load it, nothing breaks: the status line notices and draws the progress on a second row itself.
 
 The Claude Code `Monitor` tool is not needed: the workflow uses its own background sentinel.
 
@@ -129,7 +133,8 @@ Let `S=<repo>/skills/collab/scripts`, using forward slashes.
    ```bash
    echo '{"rate_limits":{"five_hour":{"used_percentage":40}}}' | node "$S/codex-status.mjs" line
    ```
-   It should print something like `Codex 5h余..% · Claude 5h余60%`. The Codex part appears once Codex has run at least once.
+   It should print something like `● Claude 60% ↻ 2h13m · ● Codex 93% ↻ 4h05m` (no reset time without one in the input). The Codex part appears once Codex has run at least once.
+   Then `claude plugin validate "<repo>/skills/collab"` must end with `Validation passed` (a missing-author warning is fine).
 4. **A real Codex run through the workflow's launcher.** Do this in a scratch git repo:
    ```bash
    D="$TEMP/collab-install-test"; rm -rf "$D"; mkdir -p "$D/.collab/runs" && cd "$D" && git init -q && git commit -q --allow-empty -m init

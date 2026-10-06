@@ -4,6 +4,7 @@
 //   node codex-status.mjs inspect <root> <run>           diagnosis bundle for a quiet run (events, sub-agents, processes)
 //   node codex-status.mjs quota <root>                   quota change per step, from .collab/runs/quota.log
 //   node codex-status.mjs line                           Claude Code status line (session JSON on stdin)
+//   node codex-status.mjs plugin <session id>            for the plugin (hooks/register.tsx): the progress to draw, as JSON
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -231,10 +232,6 @@ function ranCollab(session) {
 
 const C = { reset: '\x1b[0m', bold: '\x1b[1m', grey: '\x1b[90m', green: '\x1b[32m', yellow: '\x1b[33m', red: '\x1b[31m', cyan: '\x1b[36m' }
 const SEP = ` ${C.grey}·${C.reset} `
-const RIGHT_MARGIN = 3  // columns kept free at the right edge of the status row
-// Terminal cells a string takes: CJK and full-width characters count 2, ANSI color codes 0.
-const cells = s => [...s.replace(/\x1b\[[0-9;]*m/g, '')]
-  .reduce((n, ch) => n + (/[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6]/.test(ch) || ch.codePointAt(0) > 0xffff ? 2 : 1), 0)
 const dur = sec => (sec >= 3600 ? `${Math.floor(sec / 3600)}h${String(Math.floor((sec % 3600) / 60)).padStart(2, '0')}m` : `${Math.max(1, Math.round(sec / 60))}m`)
 
 // "● Claude 60% ↻ 2h13m". The dot is green above 50% left, yellow from 20%, red below. All grey = not live.
@@ -249,8 +246,20 @@ function quotaPart(name, w) {
   return `${dot}●${C.reset} ${name} ${C.bold}${left}%${C.reset}${C.grey}${timer}${C.reset}`
 }
 
-function collabPart(root, status, progress) {
-  if (/^escalated/i.test(status)) return `${C.yellow}⚠ collab 等你决定${C.reset}`
+// The collab run in progress for a directory (searched upward), or null.
+function activeRun(dir) {
+  let root = dir
+  while (!fs.existsSync(path.join(root, '.collab', 'progress.md')) && path.dirname(root) !== root) root = path.dirname(root)
+  const progress = readSlice(path.join(root, '.collab', 'progress.md'), false)
+  const status = (progress.match(/Status:\s*(.+)/i)?.[1] ?? '').trim()
+  return progress && !/^done/i.test(status) ? { root, status, progress } : null
+}
+
+// The progress as colored pieces. The plugin draws them at the right end of the row under the prompt;
+// without the plugin, the status line draws them on a row of their own.
+const SEP_PART = { text: ' · ', color: 'gray' }
+function collabParts({ root, status, progress }) {
+  if (/^escalated/i.test(status)) return [{ text: '⚠ collab 等你决定', color: 'yellow' }]
   const now = (progress.match(/Now:\s*(.+)/i)?.[1] ?? '').trim()
   const done = (progress.match(/^\s*- \[x\]/gim) ?? []).length
   const total = done + (progress.match(/^\s*- \[ \]/gim) ?? []).length
@@ -264,13 +273,19 @@ function collabPart(root, status, progress) {
     const todo = lines(r.log, true).reverse().find(e => e.item?.type === 'todo_list')?.item.items
     if (todo?.length && /^phase/i.test(status)) doneSteps += todo.filter(t => t.completed).length / todo.length
     const agents = r.files.filter(f => f.agent && f.type !== 'task_complete' && Date.now() - f.at < 1800000).length
-    if (agents) extras.push(`${C.grey}${agents}子代理${C.reset}`)
+    if (agents) extras.push(SEP_PART, { text: `${agents}子代理`, color: 'gray' })
     const quiet = Math.floor((Date.now() - r.last) / 60000)
-    if (quiet >= 10) extras.push(`${quiet >= 30 ? C.red : C.yellow}上次运行${quiet}分钟前${C.reset}`)
+    if (quiet >= 10) extras.push(SEP_PART, { text: `上次运行${quiet}分钟前`, color: quiet >= 30 ? 'red' : 'yellow' })
   }
-  const pct = `${C.bold}${Math.round((100 * doneSteps) / (total + 2))}%${C.reset}`  // phases + review + acceptance
-  return [`${C.cyan}⚙${C.reset} ${stage}${now && now !== stage ? ' ' + now : ''}`, pct, ...extras].join(SEP)
+  const pct = Math.round((100 * doneSteps) / (total + 2))  // phases + review + acceptance
+  return [{ text: '◆ ', color: 'cyan' }, { text: stage + (now && now !== stage ? ' ' + now : '') }, SEP_PART, { text: `${pct}%`, bold: true }, ...extras]
 }
+const ANSI = { cyan: C.cyan, yellow: C.yellow, red: C.red, gray: C.grey }
+const toAnsi = parts => parts.map(p => (p.bold ? C.bold : '') + (ANSI[p.color] ?? '') + p.text + C.reset).join('')
+
+// The plugin checks in on every poll; while it does, the progress is its to draw.
+const pluginMark = sid => path.join(os.tmpdir(), `collab-plugin-${sid}`)
+const pluginAlive = sid => Date.now() - (stat(pluginMark(sid))?.mtimeMs ?? 0) < 20000
 
 function statusLine(session) {
   const cl = claudeQuota(session)
@@ -283,30 +298,40 @@ function statusLine(session) {
     ctx != null && `${C.grey}上下文：${C.reset}${ctxTokens}${ctxColor}${Math.round(ctx)}%${C.reset}`].filter(Boolean).join(SEP)
 
   if (!ranCollab(session)) return top
-  let root = session.workspace?.current_dir ?? session.cwd ?? process.cwd()
-  while (!fs.existsSync(path.join(root, '.collab', 'progress.md')) && path.dirname(root) !== root) root = path.dirname(root)
-  const progress = readSlice(path.join(root, '.collab', 'progress.md'), false)
-  const status = (progress.match(/Status:\s*(.+)/i)?.[1] ?? '').trim()
-  if (!progress || /^done/i.test(status)) return top
+  const run = activeRun(session.workspace?.current_dir ?? session.cwd ?? process.cwd())
+  if (!run) return top
 
   // Record quota for the report: on every step change, and at most every 5 minutes otherwise.
-  const log = path.join(runs(root), 'quota.log')
+  const log = path.join(runs(run.root), 'quota.log')
   const lastRow = readSlice(log, true, 512).trim().split('\n').at(-1)?.split('\t') ?? []
-  if (lastRow[1] !== status || Date.now() - (stat(log)?.mtimeMs ?? 0) > 300000) {
+  if (lastRow[1] !== run.status || Date.now() - (stat(log)?.mtimeMs ?? 0) > 300000) {
     const used = w => (!w ? '' : w.resets_at > Date.now() / 1000 ? w.used : 0)  // a rolled-over window starts again at 0
-    const row = [new Date().toISOString(), status, used(cl.five_hour), used(cl.seven_day), used(cx.five_hour), used(cx.seven_day)]
-    try { fs.mkdirSync(runs(root), { recursive: true }); fs.appendFileSync(log, row.join('\t') + '\n') } catch {}
+    const row = [new Date().toISOString(), run.status, used(cl.five_hour), used(cl.seven_day), used(cx.five_hour), used(cx.seven_day)]
+    try { fs.mkdirSync(runs(run.root), { recursive: true }); fs.appendFileSync(log, row.join('\t') + '\n') } catch {}
   }
-  // Collab progress goes on the right of the same row; on a terminal too narrow for both, it gets its own row.
-  const right = collabPart(root, status, progress)
-  const gap = Number(process.env.COLUMNS || 0) - RIGHT_MARGIN - cells(top) - cells(right)
-  return gap >= 3 ? top + ' '.repeat(gap) + right : `${top}\n${right}`
+  return pluginAlive(session.session_id) ? top : `${top}\n${toAnsi(collabParts(run))}`
+}
+
+// For the plugin: whether this session ran /collab, and the pieces to draw. Runs in the session's directory.
+function pluginPoll(sid) {
+  try { fs.writeFileSync(pluginMark(sid), '') } catch {}
+  cache.collabSessions ??= {}
+  let transcript = cache.collabSessions[sid]?.path
+  if (!transcript) {
+    const projects = path.join(os.homedir(), '.claude', 'projects')
+    try { transcript = fs.readdirSync(projects).map(d => path.join(projects, d, `${sid}.jsonl`)).find(f => fs.existsSync(f)) } catch {}
+  }
+  const collab = !!transcript && ranCollab({ session_id: sid, transcript_path: transcript })
+  if (transcript) cache.collabSessions[sid].path = transcript
+  const run = collab && activeRun(process.cwd())
+  return { collab, parts: run ? collabParts(run) : [] }
 }
 
 const [cmd, ...args] = process.argv.slice(2)
 if (cmd === 'watch') await watch(args[0], args[1], Number(args[2] ?? 10))
 else if (cmd === 'inspect') inspect(args[0], args[1])
 else if (cmd === 'quota') quotaTable(args[0])
+else if (cmd === 'plugin') { console.log(JSON.stringify(pluginPoll(args[0]))); saveCache() }
 else if (cmd === 'line') {
   let input = ''
   for await (const chunk of process.stdin) input += chunk
@@ -314,4 +339,4 @@ else if (cmd === 'line') {
   try { session = JSON.parse(input) } catch {}
   try { process.stdout.write(statusLine(session)) } catch { process.stdout.write('') }
   saveCache()
-} else console.log('usage: codex-status.mjs watch|inspect|quota|line ...')
+} else console.log('usage: codex-status.mjs watch|inspect|quota|line|plugin ...')

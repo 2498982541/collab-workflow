@@ -1,0 +1,6 @@
+{
+  "name": "collab",
+  "version": "0.1.0",
+  "description": "Shows /collab progress at the right end of the row under the prompt",
+  "types": "./types/index.d.ts"
+}
