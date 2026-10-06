@@ -204,13 +204,15 @@ function claudeQuota(session) {
   return out
 }
 
-// Whether this session ran /collab (or a scheduled continue). Scans its transcript, only the new part each time.
+// Whether this session ran /collab (scheduled continues only fire in that same session). Scans its transcript,
+// only the new part each time. The marker is how a typed command is stored; quoted elsewhere, its quotes are escaped.
+const COLLAB_COMMAND = '"content":"<command-message>collab</command-message>'
 function ranCollab(session) {
   const f = session.transcript_path, id = session.session_id
   if (!f || !id) return false
-  cache.sessions ??= {}
-  if (Object.keys(cache.sessions).length > 300) cache.sessions = {}
-  const s = (cache.sessions[id] ??= { offset: 0, hit: false })
+  cache.collabSessions ??= {}
+  if (Object.keys(cache.collabSessions).length > 300) cache.collabSessions = {}
+  const s = (cache.collabSessions[id] ??= { offset: 0, hit: false })
   if (s.hit) return true
   const size = stat(f)?.size ?? 0
   if (size < s.offset) s.offset = 0
@@ -219,7 +221,7 @@ function ranCollab(session) {
     const buf = Buffer.alloc(1 << 22)
     for (let pos = Math.max(0, s.offset - 100); pos < size && !s.hit; pos += buf.length - 100) {
       const text = buf.toString('utf8', 0, fs.readSync(fd, buf, 0, buf.length, pos))
-      s.hit = text.includes('<command-name>/collab</command-name>') || text.includes('Continue the collab run in')
+      s.hit = text.includes(COLLAB_COMMAND)
     }
     fs.closeSync(fd)
   } catch {}
