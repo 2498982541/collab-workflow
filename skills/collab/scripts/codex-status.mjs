@@ -260,7 +260,7 @@ function collabPart(root, status, progress) {
     const agents = r.files.filter(f => f.agent && f.type !== 'task_complete' && Date.now() - f.at < 1800000).length
     if (agents) extras.push(`${C.grey}${agents}子代理${C.reset}`)
     const quiet = Math.floor((Date.now() - r.last) / 60000)
-    if (quiet >= 10) extras.push(`${quiet >= 30 ? C.red : C.yellow}⏸${quiet}分钟无动静${C.reset}`)
+    if (quiet >= 10) extras.push(`${quiet >= 30 ? C.red : C.yellow}上次运行${quiet}分钟前${C.reset}`)
   }
   const pct = `${C.bold}${Math.round((100 * doneSteps) / (total + 2))}%${C.reset}`  // phases + review + acceptance
   return [`${C.cyan}⚙${C.reset} ${stage}${now && now !== stage ? ' ' + now : ''}`, pct, ...extras].join(SEP)
