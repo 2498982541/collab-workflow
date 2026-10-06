@@ -271,8 +271,10 @@ function statusLine(session) {
   const cx = codexQuota()
   const ctx = session.context_window?.used_percentage
   const ctxColor = ctx >= 90 ? C.red : ctx >= 70 ? C.yellow : ''
+  const u = session.context_window?.current_usage  // same input-only sum that used_percentage is based on
+  const ctxTokens = u ? `${Math.round(((u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0)) / 1000)}k  ` : ''
   const top = [quotaPart('Claude', cl.five_hour), quotaPart('Codex', cx.five_hour),
-    ctx != null && `${C.grey}上下文${C.reset} ${ctxColor}${Math.round(ctx)}%${C.reset}`].filter(Boolean).join(SEP)
+    ctx != null && `${C.grey}上下文：${C.reset}${ctxTokens}${ctxColor}${Math.round(ctx)}%${C.reset}`].filter(Boolean).join(SEP)
 
   if (!ranCollab(session)) return top
   let root = session.workspace?.current_dir ?? session.cwd ?? process.cwd()
