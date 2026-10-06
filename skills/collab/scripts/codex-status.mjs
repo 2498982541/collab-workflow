@@ -170,7 +170,7 @@ function quotaTable(root) {
 
 // Codex quota from the most recent rate-limit record in its rollout files, cached for 30 s.
 function codexQuota() {
-  if (cache.quota?.h5 != null && Date.now() - cache.quota.at < 30000) return cache.quota
+  if (cache.codex && Date.now() - cache.codex.at < 30000) return cache.codex
   const recent = dayDirs(Date.now() - 86400000).flatMap(listDir)
     .map(f => ({ f, born: stat(f)?.birthtimeMs ?? 0 })).sort((a, b) => b.born - a.born).slice(0, 12)
   let best = null
@@ -180,50 +180,116 @@ function codexQuota() {
     if (e && (!best || at > best.at)) best = { at, rl: e.payload.rate_limits }
   }
   if (!best) return {}
-  const now = Date.now() / 1000
-  const used = w => (w ? (w.resets_at > now ? w.used_percent : 0) : null)
-  return (cache.quota = { at: Date.now(), h5: used(best.rl.primary), wk: used(best.rl.secondary) })
+  const win = w => w && { used: w.used_percent, resets_at: w.resets_at }
+  return (cache.codex = { at: Date.now(), five_hour: win(best.rl.primary), seven_day: win(best.rl.secondary) })
 }
 
-function statusLine(session) {
-  const cq = codexQuota()
-  const c5 = session.rate_limits?.five_hour?.used_percentage
-  const quota = [cq.h5 != null && `Codex 5h余${Math.round(100 - cq.h5)}%`, c5 != null && `Claude 5h余${Math.round(100 - c5)}%`].filter(Boolean).join(' · ')
+// Claude Code passes rate_limits only after a session's first reply, and drops a window once it resets.
+// So every value seen is saved, and the saved one stands in (shown grey) when the session has none.
+const CLAUDE_QUOTA = path.join(os.tmpdir(), 'collab-claude-quota.json')
+// The later window wins; within one window, usage only grows.
+const newer = (a, b) => !b ? a : !a ? b : a.resets_at !== b.resets_at ? (a.resets_at > b.resets_at ? a : b) : (a.used >= b.used ? a : b)
+function claudeQuota(session) {
+  let saved = {}
+  try { saved = JSON.parse(fs.readFileSync(CLAUDE_QUOTA, 'utf8')) } catch {}
+  const before = JSON.stringify(saved)
+  const out = {}
+  for (const w of ['five_hour', 'seven_day']) {
+    const l = session.rate_limits?.[w]
+    const live = l?.used_percentage != null ? { used: l.used_percentage, resets_at: l.resets_at } : null
+    saved[w] = newer(live, saved[w])
+    out[w] = saved[w] && { ...saved[w], live: !!live }
+  }
+  if (JSON.stringify(saved) !== before) try { fs.writeFileSync(CLAUDE_QUOTA, JSON.stringify(saved)) } catch {}
+  return out
+}
 
-  let root = session.workspace?.current_dir ?? session.cwd ?? process.cwd()
-  while (!fs.existsSync(path.join(root, '.collab', 'progress.md')) && path.dirname(root) !== root) root = path.dirname(root)
-  const progress = readSlice(path.join(root, '.collab', 'progress.md'), false)
-  const status = (progress.match(/Status:\s*(.+)/i)?.[1] ?? '').trim()
-  if (!progress || /^done/i.test(status)) return quota
-  if (/^escalated/i.test(status)) return `⚠ collab 等你决定 │ ${quota}`
+// Whether this session ran /collab (or a scheduled continue). Scans its transcript, only the new part each time.
+function ranCollab(session) {
+  const f = session.transcript_path, id = session.session_id
+  if (!f || !id) return false
+  cache.sessions ??= {}
+  if (Object.keys(cache.sessions).length > 300) cache.sessions = {}
+  const s = (cache.sessions[id] ??= { offset: 0, hit: false })
+  if (s.hit) return true
+  const size = stat(f)?.size ?? 0
+  if (size < s.offset) s.offset = 0
+  try {
+    const fd = fs.openSync(f, 'r')
+    const buf = Buffer.alloc(1 << 22)
+    for (let pos = Math.max(0, s.offset - 100); pos < size && !s.hit; pos += buf.length - 100) {
+      const text = buf.toString('utf8', 0, fs.readSync(fd, buf, 0, buf.length, pos))
+      s.hit = text.includes('<command-name>/collab</command-name>') || text.includes('Continue the collab run in')
+    }
+    fs.closeSync(fd)
+  } catch {}
+  s.offset = size
+  return s.hit
+}
 
+const C = { reset: '\x1b[0m', bold: '\x1b[1m', grey: '\x1b[90m', green: '\x1b[32m', yellow: '\x1b[33m', red: '\x1b[31m', cyan: '\x1b[36m' }
+const SEP = ` ${C.grey}·${C.reset} `
+const dur = sec => (sec >= 3600 ? `${Math.floor(sec / 3600)}h${String(Math.floor((sec % 3600) / 60)).padStart(2, '0')}m` : `${Math.max(1, Math.round(sec / 60))}m`)
+
+// "● Claude 60% ↻2h13m". The dot is green above 50% left, yellow from 20%, red below. All grey = not live.
+function quotaPart(name, w) {
+  if (!w) return null
+  const now = Date.now() / 1000
+  const reset = !w.resets_at || w.resets_at <= now  // the window has rolled over since this value was seen
+  const left = reset ? 100 : Math.max(0, Math.round(100 - w.used))
+  const timer = reset ? '' : ` ↻${dur(w.resets_at - now)}`
+  if (w.live === false || reset) return `${C.grey}● ${name} ${left}%${timer}${C.reset}`
+  const dot = left > 50 ? C.green : left >= 20 ? C.yellow : C.red
+  return `${dot}●${C.reset} ${name} ${C.bold}${left}%${C.reset}${C.grey}${timer}${C.reset}`
+}
+
+function collabPart(root, status, progress) {
+  if (/^escalated/i.test(status)) return `${C.yellow}⚠ collab 等你决定${C.reset}`
   const now = (progress.match(/Now:\s*(.+)/i)?.[1] ?? '').trim()
   const done = (progress.match(/^\s*- \[x\]/gim) ?? []).length
   const total = done + (progress.match(/^\s*- \[ \]/gim) ?? []).length
-  const steps = total + 2  // phases + review + acceptance
   let doneSteps = /^review/i.test(status) ? total : /^accept/i.test(status) ? total + 1 : done
-  const bits = [`⚙ ${/^phase/i.test(status) ? `阶段${Math.min(done + 1, total)}/${total}` : 'collab'}${now ? ' ' + now : ''}`]
-
+  const stage = /^phase/i.test(status) ? `阶段${Math.min(done + 1, total)}/${total}`
+    : /^plan/i.test(status) ? '规划' : /^review/i.test(status) ? '代码审查' : /^accept/i.test(status) ? '验收' : 'collab'
+  const extras = []
   const run = currentRun(root)
   if (run) {
     const r = runInfo(root, run)
     const todo = lines(r.log, true).reverse().find(e => e.item?.type === 'todo_list')?.item.items
     if (todo?.length && /^phase/i.test(status)) doneSteps += todo.filter(t => t.completed).length / todo.length
     const agents = r.files.filter(f => f.agent && f.type !== 'task_complete' && Date.now() - f.at < 1800000).length
-    if (agents) bits.push(`${agents}子代理`)
+    if (agents) extras.push(`${C.grey}${agents}子代理${C.reset}`)
     const quiet = Math.floor((Date.now() - r.last) / 60000)
-    if (quiet >= 10) bits.push(`⏸${quiet}分钟无动静`)
+    if (quiet >= 10) extras.push(`${quiet >= 30 ? C.red : C.yellow}⏸${quiet}分钟无动静${C.reset}`)
   }
-  bits.splice(1, 0, `约${Math.round((100 * doneSteps) / steps)}%`)
+  const pct = `${C.bold}${Math.round((100 * doneSteps) / (total + 2))}%${C.reset}`  // phases + review + acceptance
+  return [`${C.cyan}⚙${C.reset} ${stage}${now && now !== stage ? ' ' + now : ''}`, pct, ...extras].join(SEP)
+}
+
+function statusLine(session) {
+  const cl = claudeQuota(session)
+  const cx = codexQuota()
+  const ctx = session.context_window?.used_percentage
+  const ctxColor = ctx >= 90 ? C.red : ctx >= 70 ? C.yellow : ''
+  const top = [quotaPart('Claude', cl.five_hour), quotaPart('Codex', cx.five_hour),
+    ctx != null && `${C.grey}上下文${C.reset} ${ctxColor}${Math.round(ctx)}%${C.reset}`].filter(Boolean).join(SEP)
+
+  if (!ranCollab(session)) return top
+  let root = session.workspace?.current_dir ?? session.cwd ?? process.cwd()
+  while (!fs.existsSync(path.join(root, '.collab', 'progress.md')) && path.dirname(root) !== root) root = path.dirname(root)
+  const progress = readSlice(path.join(root, '.collab', 'progress.md'), false)
+  const status = (progress.match(/Status:\s*(.+)/i)?.[1] ?? '').trim()
+  if (!progress || /^done/i.test(status)) return top
 
   // Record quota for the report: on every step change, and at most every 5 minutes otherwise.
   const log = path.join(runs(root), 'quota.log')
   const lastRow = readSlice(log, true, 512).trim().split('\n').at(-1)?.split('\t') ?? []
   if (lastRow[1] !== status || Date.now() - (stat(log)?.mtimeMs ?? 0) > 300000) {
-    const row = [new Date().toISOString(), status, c5 ?? '', session.rate_limits?.seven_day?.used_percentage ?? '', cq.h5 ?? '', cq.wk ?? '']
+    const used = w => (!w ? '' : w.resets_at > Date.now() / 1000 ? w.used : 0)  // a rolled-over window starts again at 0
+    const row = [new Date().toISOString(), status, used(cl.five_hour), used(cl.seven_day), used(cx.five_hour), used(cx.seven_day)]
     try { fs.mkdirSync(runs(root), { recursive: true }); fs.appendFileSync(log, row.join('\t') + '\n') } catch {}
   }
-  return `${bits.join(' · ')} │ ${quota}`
+  return `${top}\n${collabPart(root, status, progress)}`
 }
 
 const [cmd, ...args] = process.argv.slice(2)

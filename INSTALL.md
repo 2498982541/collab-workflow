@@ -85,8 +85,8 @@ Merge these in, and don't overwrite other keys. The user chose global bypass bec
   ```json
   "statusLine": { "type": "command", "command": "node \"C:/Users/<user>/.claude/skills/collab/scripts/codex-status.mjs\" line", "refreshInterval": 10 }
   ```
-  - Inside a `/collab` project it shows something like `⚙ 阶段2/3 写前端 · 约65% · 3子代理 │ Codex 5h余82% · Claude 5h余60%`, and it logs quota to `.collab/runs/quota.log` for the final report.
-  - Anywhere else it shows just the two quotas.
+  - Every session gets one line: both 5-hour quotas with reset countdowns, plus context use, e.g. `● Claude 60% ↻2h13m · ● Codex 93% ↻4h05m · 上下文 23%`. Grey means a remembered value, not a live one.
+  - The session that ran `/collab` gets a second line with progress, e.g. `⚙ 阶段2/3 写前端 · 65% · 3子代理`, and logs quota to `.collab/runs/quota.log` for the final report.
 
 The Claude Code `Monitor` tool is not needed: the workflow uses its own background sentinel.
 
