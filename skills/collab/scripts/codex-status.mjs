@@ -229,6 +229,10 @@ function ranCollab(session) {
 
 const C = { reset: '\x1b[0m', bold: '\x1b[1m', grey: '\x1b[90m', green: '\x1b[32m', yellow: '\x1b[33m', red: '\x1b[31m', cyan: '\x1b[36m' }
 const SEP = ` ${C.grey}·${C.reset} `
+const RIGHT_MARGIN = 3  // columns kept free at the right edge of the status row
+// Terminal cells a string takes: CJK and full-width characters count 2, ANSI color codes 0.
+const cells = s => [...s.replace(/\x1b\[[0-9;]*m/g, '')]
+  .reduce((n, ch) => n + (/[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]/.test(ch) || ch.codePointAt(0) > 0xffff ? 2 : 1), 0)
 const dur = sec => (sec >= 3600 ? `${Math.floor(sec / 3600)}h${String(Math.floor((sec % 3600) / 60)).padStart(2, '0')}m` : `${Math.max(1, Math.round(sec / 60))}m`)
 
 // "● Claude 60% ↻ 2h13m". The dot is green above 50% left, yellow from 20%, red below. All grey = not live.
@@ -291,7 +295,10 @@ function statusLine(session) {
     const row = [new Date().toISOString(), status, used(cl.five_hour), used(cl.seven_day), used(cx.five_hour), used(cx.seven_day)]
     try { fs.mkdirSync(runs(root), { recursive: true }); fs.appendFileSync(log, row.join('\t') + '\n') } catch {}
   }
-  return `${top}\n${collabPart(root, status, progress)}`
+  // Collab progress goes on the right of the same row; on a terminal too narrow for both, it gets its own row.
+  const right = collabPart(root, status, progress)
+  const gap = Number(process.env.COLUMNS || 0) - RIGHT_MARGIN - cells(top) - cells(right)
+  return gap >= 3 ? top + ' '.repeat(gap) + right : `${top}\n${right}`
 }
 
 const [cmd, ...args] = process.argv.slice(2)
