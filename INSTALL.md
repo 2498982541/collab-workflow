@@ -19,7 +19,7 @@ Goal: make `/collab` fully work on this Windows 11 machine in one pass. Go throu
 | Playwright MCP | Claude screenshots the UI |
 | GitHub CLI, logged in | syncing this repo between machines |
 | a status line | shows both quotas and context use, and records quota for the final report |
-| the `collab` plugin (in `skills/collab`) | draws /collab progress at the right end of the row under the prompt; loads by itself from the skills folder |
+| the `collab` plugin (in `skills/collab`) | draws /collab progress at the right end of the row under the prompt; loads from the skills folder once function hooks are enabled (section 4) |
 
 ## 1. Repo location
 
@@ -88,9 +88,11 @@ Merge these in, and don't overwrite other keys. The user chose global bypass bec
   ```
   - Every session gets one line: both 5-hour quotas with reset countdowns, plus context use, e.g. `● Claude 60% ↻ 2h13m · ● Codex 93% ↻ 4h05m · 上下文：50k  23%`. Grey means a remembered value, not a live one.
   - The session that ran `/collab` logs quota to `.collab/runs/quota.log` for the final report. Its progress, e.g. `◆ 阶段2/3 写前端 · 65% · 3子代理`, is drawn by the plugin below.
-- **The `collab` plugin** needs no setup: `skills/collab` holds a plugin of function hooks (`.claude-plugin/`, `hooks/`, `types/`), and Claude Code loads it from the skills folder in every session.
+- **The `collab` plugin** needs one setting: `skills/collab` holds a plugin of function hooks (`.claude-plugin/`, `hooks/`, `types/`), and Claude Code loads it from the skills folder in every session.
   - It draws the progress at the right end of the row under the prompt. The engine lays that row out, so it follows the window width at once.
-  - Plugin hooks are early access (tested on Claude Code 2.1.288). If this version can't load it, nothing breaks: the status line notices and draws the progress on a second row itself.
+  - Plugin hooks are early access, switched on by a remote feature flag. With telemetry off (`DISABLE_TELEMETRY` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`), that flag never arrives and the plugin is listed but never loaded. So always set `"CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1"` in `env`; keep the user's telemetry settings as they are.
+  - To check: `claude -p "reply ok" --debug --debug-file <file>` in any folder, then the log must contain `hooks module collab@skills-dir loaded`.
+  - Tested on Claude Code 2.1.283 and 2.1.288. If this version can't load it, nothing breaks: the status line notices and draws the progress on a second row itself.
 
 The Claude Code `Monitor` tool is not needed: the workflow uses its own background sentinel.
 
