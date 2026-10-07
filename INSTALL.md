@@ -78,6 +78,7 @@ Merge these in, and don't overwrite other keys. The user chose global bypass bec
 - `"permissions": { "defaultMode": "bypassPermissions" }`
 - `"skipDangerousModePermissionPrompt": true`
 - `autoContinueAtUsageLimit` must not be `false`.
+- **Telemetry off** (the user's choice, for privacy). In `env`, set `"DISABLE_TELEMETRY": "1"`, `"DISABLE_ERROR_REPORTING": "1"` and `"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"`. This also stops remote feature flags, so the plugin below needs its own switch.
 - **MCP tool search must work.**
   - In `env`, `ENABLE_TOOL_SEARCH` should be `"1"` (or unset), and `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS` must not be set. If it is, remove it.
   - That variable silently turns tool search off, so every MCP server's full tool list (about 50k tokens with the claude.ai connectors and Playwright) is re-read on every request of a long `/collab` run.
@@ -90,7 +91,7 @@ Merge these in, and don't overwrite other keys. The user chose global bypass bec
   - The session that ran `/collab` logs quota to `.collab/runs/quota.log` for the final report. Its progress, e.g. `◆ 阶段2/3 写前端 · 65% · 3子代理`, is drawn by the plugin below.
 - **The `collab` plugin** needs one setting: `skills/collab` holds a plugin of function hooks (`.claude-plugin/`, `hooks/`, `types/`), and Claude Code loads it from the skills folder in every session.
   - It draws the progress at the right end of the row under the prompt. The engine lays that row out, so it follows the window width at once.
-  - Plugin hooks are early access, switched on by a remote feature flag. With telemetry off (`DISABLE_TELEMETRY` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`), that flag never arrives and the plugin is listed but never loaded. So always set `"CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1"` in `env`; keep the user's telemetry settings as they are.
+  - Plugin hooks are early access, normally switched on by a remote feature flag. With telemetry off, that flag never arrives and the plugin is listed but never loaded. So set `"CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1"` in `env`. It only turns the feature on locally and sends nothing.
   - To check: `claude -p "reply ok" --debug --debug-file <file>` in any folder, then the log must contain `hooks module collab@skills-dir loaded`.
   - Tested on Claude Code 2.1.283 and 2.1.288. If this version can't load it, nothing breaks: the status line notices and draws the progress on a second row itself.
 
