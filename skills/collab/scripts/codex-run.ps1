@@ -1,7 +1,7 @@
 # Runs one Codex turn inside a Windows job object (run it from the project root):
 #   codex-run.ps1 -Name phase-2 -Effort medium                      fresh run
 #   codex-run.ps1 -Name phase-2.fix-1 -Effort medium -Resume <id>   resume a thread
-#   codex-run.ps1 -Name review -Effort high -Sandbox read-only
+#   codex-run.ps1 -Name review -Effort high                         review run (/collab never uses -Sandbox read-only, see SKILL.md Step 4)
 #   -Parallel N lets Codex run up to N sub-agents at once (default 1).
 # Reads .collab/runs/<Name>.prompt.md; writes <Name>.jsonl (events), <Name>.last.md (final message),
 # <Name>.job (job object name, used by codex-proc.ps1) and <Name>.exit (exit code, written last).

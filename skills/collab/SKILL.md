@@ -43,6 +43,7 @@ progress.md keeps:
 - the phase checklist (`- [x]` / `- [ ]`), with a one-line summary for each phase;
 - the current Codex run: name, effort, parallel, thread id, and the current sentinel minutes;
 - the fix-round count for the current phase or acceptance criterion;
+- servers you started yourself that are still running (port and PID), so they can be stopped even after a restart;
 - a "Decisions made without asking" list.
 
 Update it at every step change.
@@ -130,7 +131,7 @@ When woken by `SILENT`, don't investigate yourself:
    - **HEALTHY:** start the sentinel again. If the SILENT line's "last at" time is later than when you started that sentinel, the run did something in between, so use 10 minutes. Otherwise double the previous minutes (10 → 20 → 40). After 3 HEALTHY verdicts in a row with no activity in between, treat it as STUCK.
    - **STUCK:** run `codex-proc.ps1 stop <name>`, then resume the thread under a new name, with a note on what the inspector found. This counts as a fix round.
 
-Servers you start yourself (skeleton renders, UI checks, acceptance) survive TaskStop on Windows. Before you start the app and after you stop it, free its port: find the PID with `netstat -ano | grep LISTENING | grep ":<port> "`, then run `taskkill //PID <pid> //T //F`.
+Servers you start yourself (skeleton renders, UI checks, acceptance) survive TaskStop on Windows, and survive the user closing this window. Before you start the app and after you stop it, free its port: find the PID with `netstat -ano | grep LISTENING | grep ":<port> "`, then run `taskkill //PID <pid> //T //F`. Record each one in progress.md while it runs, and remove it once stopped.
 
 ## Step 3 - Phases
 
@@ -143,11 +144,12 @@ For each phase in plan.md:
 3. If something is wrong, resume the phase's thread with a short fix list. Each resume is one fix round. After 2 rounds, if the phase is still wrong, escalate.
 4. Mark the phase done in progress.md.
 
-## Step 4 - Code review (Codex, once, read-only)
+## Step 4 - Code review (Codex, once, review only)
 
 1. Fill `codex-review.md` (`{{BASE}}` = the base commit) into `.collab/runs/review.prompt.md`.
-2. Launch it the usual way, with `-Name review -Effort high -Sandbox read-only`.
-3. If the result isn't `NO_ISSUES`, make one fresh write run with task "Fix the issues listed in .collab/runs/review.last.md" and effort `medium`.
+2. Commit anything uncommitted, then launch it the usual way, with `-Name review -Effort high`. It runs with full access like every other run: Codex's read-only sandbox needs a Windows sandbox setup that can fail and leave Codex's own setup unfinished. The prompt tells Codex not to modify files.
+3. If `git status --porcelain` then shows changes anyway, run `git stash push -u -m "collab: edits made during review"` and log it under "Decisions made without asking".
+4. If the result isn't `NO_ISSUES`, make one fresh write run with task "Fix the issues listed in .collab/runs/review.last.md" and effort `medium`.
 
 Don't judge the findings yourself — code quality is Codex's call.
 
@@ -168,12 +170,12 @@ Write `.collab/report.md` in Chinese:
 5. Branch name and a commit summary, plus a reminder that the user merges it themselves.
 6. Quota used per step, as a table: run `codex-status.mjs quota "<project root>"` and translate it.
 
-Then:
-1. Commit everything that remains.
-2. Set the status to `done`.
+Then wrap up. The user may close this window the moment the notification appears, so everything must be finished before it, and nothing may matter only in chat:
+1. Stop every server listed in progress.md, and check that no project port is still listening.
+2. Set the status to `done`, then commit everything that remains (progress.md itself is not committed).
 3. Run `keep-awake.ps1 stop`.
-4. Run `notify.ps1 -Title "collab 完成" -Message "<one line>"`.
-5. Give a short Chinese summary in chat.
+4. Run `notify.ps1 -Title "collab 完成" -Message "<one line>"` as the last command.
+5. Give a short Chinese summary in chat, pointing to `.collab/report.md`. This is a courtesy; report.md must already say everything.
 
 Never merge or push.
 
@@ -186,7 +188,7 @@ Never merge or push.
 
 To escalate:
 1. Set status `escalated` with the reason.
-2. Delete any pending `CronCreate` job.
+2. Delete any pending `CronCreate` job, and stop every server listed in progress.md.
 3. Stop keep-awake.
 4. Run `notify.ps1` with a one-line Chinese message.
 5. Explain the problem to the user in Chinese, with options.
@@ -204,7 +206,7 @@ Everything else, decide yourself and log it under "Decisions made without asking
 ## Continue
 
 1. Read `.collab/progress.md`. If status is `escalated`, get the user's decision first.
-2. Run `keep-awake.ps1 start`.
+2. Run `keep-awake.ps1 start`. Stop any server still listed in progress.md (check its port first: the PID may have been reused) and clear the list.
 3. If the current Codex run has no `.exit` file, check whether it's alive with `codex-proc.ps1 list <name>` (no output means not alive).
    - **Alive:** start its sentinel again (10 minutes) and end your turn.
    - **Not alive:** write `dead` into `.collab/runs/<name>.exit`. Then, under a new name, resume its thread if the log has one; otherwise re-launch the run.
