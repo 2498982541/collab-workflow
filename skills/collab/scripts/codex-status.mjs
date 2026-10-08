@@ -4,7 +4,9 @@
 //   node codex-status.mjs inspect <root> <run>           diagnosis bundle for a quiet run (events, sub-agents, processes)
 //   node codex-status.mjs quota <root>                   quota change per step, from .collab/runs/quota.log
 //   node codex-status.mjs line                           Claude Code status line (session JSON on stdin)
-//   node codex-status.mjs plugin <session id>            for the plugin (hooks/register.tsx): the progress to draw, as JSON
+//   node codex-status.mjs plugin <session id>            for the plugin (hooks/register.tsx): the progress to draw, as JSON,
+//                                                        and when due, a question for Haiku about what Codex is doing
+//   node codex-status.mjs haiku                          for the plugin: Haiku's answer on stdin, shown with the progress
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -167,6 +169,11 @@ function quotaTable(root) {
   console.log('step | from - to | Claude 5h | Claude week | Codex 5h | Codex week   (percentage points; a 5h window can drop when it rolls over)')
   steps.forEach((s, i) => row(s.step, s.first, steps[i + 1]?.first ?? s.last))  // a step ends where the next one starts
   row('total', rows[0], rows.at(-1))
+  const haiku = readSlice(path.join(runs(root), 'haiku.log'), false, 1 << 22).split('\n').filter(Boolean).map(l => l.split('\t'))
+  if (haiku.length) {
+    const [input, output] = [2, 3].map(i => haiku.reduce((a, r) => a + Number(r[i] || 0), 0))
+    console.log(`Haiku 5.5 status summaries: ${haiku.length} calls, ${input} input + ${output} output tokens (about $${((input * 0.1 + output * 0.5) / 1e6).toFixed(3)} at API prices; counted in Claude 5h above)`)
+  }
 }
 
 // Codex quota from the most recent rate-limit record in its rollout files, cached for 30 s.
@@ -255,30 +262,106 @@ function activeRun(dir) {
   return progress && !/^done/i.test(status) ? { root, status, progress } : null
 }
 
+// A Codex progress line, which codex-task.md asks for at the start of each step: "▶ 3/7 检查日志".
+const STEP = /^▶\s*(\d+)\s*\/\s*(\d+)\s*(.*)$/m
+
+// One line per finished event, for Haiku. Codex's own config warnings are left out.
+function brief(it) {
+  if (it.type === 'error') return null
+  if (it.type === 'command_execution') return `ran (exit ${it.exit_code ?? '?'}): ${clip(it.command, 150)}${it.aggregated_output ? ' => ' + clip(it.aggregated_output.slice(-150), 150) : ''}`
+  if (it.type === 'file_change') return `edited: ${it.changes?.map(c => path.basename(c.path)).join(', ')}`
+  if (it.type === 'agent_message') return `said: ${clip(it.text, 300)}`
+  return `${it.type}: ${clip(it.text ?? it.message ?? '', 150)}`
+}
+
+// What the live run is doing, read from its log incrementally and kept in .collab/runs/status.json: its latest
+// progress line, the commands still running (with when they were first seen), its recent events, Haiku's summary.
+// One writer at a time: the plugin while it's alive, otherwise the status line.
+const statusFile = root => path.join(runs(root), 'status.json')
+const saveState = (root, s) => { try { fs.writeFileSync(statusFile(root), JSON.stringify(s)) } catch {} }
+function runState(root, run) {
+  let s = {}
+  try { s = JSON.parse(fs.readFileSync(statusFile(root), 'utf8')) } catch {}
+  if (s.run !== run) s = { run, offset: 0, open: {}, recent: [] }
+  let fd
+  try {
+    fd = fs.openSync(path.join(runs(root), `${run}.jsonl`), 'r')
+    const size = fs.fstatSync(fd).size
+    if (size <= s.offset) return s
+    const buf = Buffer.alloc(size - s.offset)
+    fs.readSync(fd, buf, 0, buf.length, s.offset)
+    const end = buf.lastIndexOf(10) + 1  // whole lines only; a partial one is read next time
+    s.offset += end
+    for (const l of buf.toString('utf8', 0, end).split('\n')) {
+      let e
+      try { e = JSON.parse(l) } catch { continue }
+      const it = e.item
+      if (!it) continue
+      if (it.type === 'command_execution') {
+        if (e.type === 'item.started') s.open[it.id] = { cmd: clip(it.command, 150), at: Date.now() }
+        else delete s.open[it.id]
+      }
+      const m = it.type === 'agent_message' && it.text?.match(STEP)
+      if (m) s.step = { k: Number(m[1]), n: Number(m[2]), text: clip(m[3], 40) }
+      if (e.type === 'item.completed') s.recent.push(brief(it))
+    }
+    s.recent = s.recent.filter(Boolean).slice(-12)
+  } catch {} finally { if (fd !== undefined) fs.closeSync(fd) }
+  return s
+}
+
+const HAIKU = 'claude-haiku-5-5'
+const HAIKU_SYSTEM = 'You watch the log of a coding agent. Reply with one short phrase in Chinese, at most 16 characters, '
+  + 'saying what it is doing right now (not what it already finished), like 正在跑单元测试 or 修复登录接口报错. '
+  + 'Only the phrase: no quotes, no trailing punctuation.'
+function haikuPrompt(root, run, s) {
+  const task = readSlice(path.join(runs(root), `${run}.prompt.md`), false).match(/Your task:\s*(.+)/)?.[1] ?? run
+  const open = Object.values(s.open).map(o => `still running for ${Math.round((Date.now() - o.at) / 60000)} min: ${o.cmd}`)
+  return [`Task: ${clip(task, 200)}`, s.step && `Its latest progress line: ${s.step.k}/${s.step.n} ${s.step.text}`,
+    'Recent events, oldest first:', ...s.recent, ...open].filter(Boolean).join('\n')
+}
+
 // The progress as colored pieces. The plugin draws them at the right end of the row under the prompt;
-// without the plugin, the status line draws them on a row of their own.
+// without the plugin, the status line draws them on a row of their own. `fill` marks the piece cut short
+// when the row is too narrow. `run` is the live Codex run and `s` its runState, if there is one.
 const SEP_PART = { text: ' · ', color: 'gray' }
-function collabParts({ root, status, progress }) {
+const REVIEW_MIN = 10, ACCEPT_MIN = 10  // rough weights of the two steps after the phases
+function collabParts({ root, status, progress }, run, s) {
   if (/^escalated/i.test(status)) return [{ text: '⚠ collab 等你决定', color: 'yellow' }]
   const now = (progress.match(/Now:\s*(.+)/i)?.[1] ?? '').trim()
-  const done = (progress.match(/^\s*- \[x\]/gim) ?? []).length
-  const total = done + (progress.match(/^\s*- \[ \]/gim) ?? []).length
-  let doneSteps = /^review/i.test(status) ? total : /^accept/i.test(status) ? total + 1 : done
-  const stage = /^phase/i.test(status) ? `阶段${Math.min(done + 1, total)}/${total}`
-    : /^plan/i.test(status) ? '规划' : /^review/i.test(status) ? '代码审查' : /^accept/i.test(status) ? '验收' : 'collab'
-  const extras = []
-  const run = currentRun(root)
+  // The phases from the checklist, each weighted by its estimate "(~25m)", 20 minutes without one.
+  const phases = [...progress.matchAll(/^\s*- \[([ x])\](.*)$/gim)].map(m => ({ done: m[1] !== ' ', min: Number(m[2].match(/\(~(\d+)\s*m\)/)?.[1] ?? 20) }))
+  const sum = list => list.reduce((a, p) => a + p.min, 0)
+  const done = phases.filter(p => p.done).length
+  const isPhase = /^phase/i.test(status), isReview = /^review/i.test(status), isAccept = /^accept/i.test(status)
+  const stage = isPhase ? `阶段${Math.min(done + 1, phases.length)}/${phases.length}`
+    : /^plan/i.test(status) ? '规划' : isReview ? '代码审查' : isAccept ? '验收' : 'collab'
+  // How far into the current step: Codex's progress lines while the phase's own run works;
+  // a fix run, or Claude checking after the run, counts as nearly done.
+  let frac = 0
+  if (isPhase) {
+    const base = `phase-${done + 1}`
+    frac = run === base ? (s.step ? (s.step.k - 1) / s.step.n : 0) : fs.existsSync(path.join(runs(root), `${base}.exit`)) ? 0.9 : 0
+  } else if (isReview || isAccept) frac = 0.5
+  const doneMin = sum(phases.filter(p => p.done)) + (isAccept ? REVIEW_MIN : 0)
+  const curMin = isPhase ? (phases.find(p => !p.done)?.min ?? 0) : isReview ? REVIEW_MIN : isAccept ? ACCEPT_MIN : 0
+  const pct = Math.min(99, Math.round((100 * (doneMin + curMin * frac)) / (sum(phases) + REVIEW_MIN + ACCEPT_MIN)))
+
+  const parts = [{ text: '◆ ', color: 'cyan' }, { text: stage + (now && now !== stage ? ' ' + now : '') }]
+  if (run && s.step) parts.push(SEP_PART, { text: `${s.step.k}/${s.step.n}` })
+  parts.push(SEP_PART, { text: `${pct}%`, bold: true })
   if (run) {
     const r = runInfo(root, run)
-    const todo = lines(r.log, true).reverse().find(e => e.item?.type === 'todo_list')?.item.items
-    if (todo?.length && /^phase/i.test(status)) doneSteps += todo.filter(t => t.completed).length / todo.length
     const agents = r.files.filter(f => f.agent && f.type !== 'task_complete' && Date.now() - f.at < 1800000).length
-    if (agents) extras.push(SEP_PART, { text: `${agents}子代理`, color: 'gray' })
+    if (agents) parts.push(SEP_PART, { text: `${agents}子代理`, color: 'gray' })
     const quiet = Math.floor((Date.now() - r.last) / 60000)
-    if (quiet >= 10) extras.push(SEP_PART, { text: `上次运行${quiet}分钟前`, color: quiet >= 30 ? 'red' : 'yellow' })
+    if (quiet >= 10) parts.push(SEP_PART, { text: `上次运行${quiet}分钟前`, color: quiet >= 30 ? 'red' : 'yellow' })
+    const busy = Math.floor(Math.max(0, ...Object.values(s.open).map(o => Date.now() - o.at)) / 60000)
+    if (busy >= 2) parts.push(SEP_PART, { text: `命令已跑${busy}分钟`, color: busy >= 10 ? 'yellow' : 'gray' })
+    const activity = s.summary && Date.now() - s.summary.at < 180000 ? s.summary.text : s.step?.text
+    if (activity) parts.push(SEP_PART, { text: activity, fill: true })
   }
-  const pct = Math.round((100 * doneSteps) / (total + 2))  // phases + review + acceptance
-  return [{ text: '◆ ', color: 'cyan' }, { text: stage + (now && now !== stage ? ' ' + now : '') }, SEP_PART, { text: `${pct}%`, bold: true }, ...extras]
+  return parts
 }
 const ANSI = { cyan: C.cyan, yellow: C.yellow, red: C.red, gray: C.grey }
 const toAnsi = parts => parts.map(p => (p.bold ? C.bold : '') + (ANSI[p.color] ?? '') + p.text + C.reset).join('')
@@ -309,7 +392,11 @@ function statusLine(session) {
     const row = [new Date().toISOString(), run.status, used(cl.five_hour), used(cl.seven_day), used(cx.five_hour), used(cx.seven_day)]
     try { fs.mkdirSync(runs(run.root), { recursive: true }); fs.appendFileSync(log, row.join('\t') + '\n') } catch {}
   }
-  return pluginAlive(session.session_id) ? top : `${top}\n${toAnsi(collabParts(run))}`
+  if (pluginAlive(session.session_id)) return top
+  const codex = currentRun(run.root)
+  const s = codex && runState(run.root, codex)
+  if (s) saveState(run.root, s)
+  return `${top}\n${toAnsi(collabParts(run, codex, s))}`
 }
 
 // For the plugin: whether this session ran /collab, and the pieces to draw. Runs in the session's directory.
@@ -323,8 +410,33 @@ function pluginPoll(sid) {
   }
   const collab = !!transcript && ranCollab({ session_id: sid, transcript_path: transcript })
   if (transcript) cache.collabSessions[sid].path = transcript
-  const run = collab && activeRun(process.cwd())
-  return { collab, parts: run ? collabParts(run) : [] }
+  const act = collab && activeRun(process.cwd())
+  if (!act) return { collab, parts: [] }
+  const codex = currentRun(act.root)
+  const s = codex && runState(act.root, codex)
+  let ask
+  // At most once a minute, and only when the log moved since the last question, Haiku sums up what Codex is doing.
+  if (s && s.offset !== s.askedOffset && s.recent.length && Date.now() - (s.askedAt ?? 0) >= 60000) {
+    s.askedAt = Date.now()
+    s.askedOffset = s.offset
+    ask = { run: codex, model: HAIKU, system: HAIKU_SYSTEM, prompt: haikuPrompt(act.root, codex, s) }
+  }
+  if (s) saveState(act.root, s)
+  return { collab, parts: collabParts(act, codex, s), ask }
+}
+
+// Haiku's answer from the plugin ({ run, text, usage } on stdin): kept as the run's summary, its cost logged for the report.
+async function haikuNote() {
+  let input = ''
+  for await (const chunk of process.stdin) input += chunk
+  const { run, text, usage = {} } = JSON.parse(input)
+  const act = activeRun(process.cwd())
+  if (!act) return
+  const s = runState(act.root, run)
+  const phrase = String(text ?? '').split('\n').map(l => l.trim()).find(Boolean)?.replace(/^["'“「]+|["'”」。.!！]+$/g, '').slice(0, 24)
+  if (phrase) { s.summary = { text: phrase, at: Date.now() }; saveState(act.root, s) }
+  const row = [new Date().toISOString(), run, usage.input_tokens ?? 0, usage.output_tokens ?? 0, usage.cache_read_input_tokens ?? 0, usage.cache_creation_input_tokens ?? 0]
+  fs.appendFileSync(path.join(runs(act.root), 'haiku.log'), row.join('\t') + '\n')
 }
 
 const [cmd, ...args] = process.argv.slice(2)
@@ -332,6 +444,7 @@ if (cmd === 'watch') await watch(args[0], args[1], Number(args[2] ?? 10))
 else if (cmd === 'inspect') inspect(args[0], args[1])
 else if (cmd === 'quota') quotaTable(args[0])
 else if (cmd === 'plugin') { console.log(JSON.stringify(pluginPoll(args[0]))); saveCache() }
+else if (cmd === 'haiku') await haikuNote()
 else if (cmd === 'line') {
   let input = ''
   for await (const chunk of process.stdin) input += chunk

@@ -19,6 +19,11 @@ Sub-agents: if plan.md splits your task into subtasks (`parallel` > 1):
 - Sub-agents edit only the files they own.
 - Wait for all of them to finish, then integrate their work, run the build and tests, fix what's broken, and commit.
 
+Progress lines (the user's status bar is built from them):
+- Before you start, split your task into 3–9 steps.
+- When you start a step, send a short message whose first line is `▶ k/N <step>`: k is the step's number, N the number of steps, and <step> says what it does in at most 12 Chinese characters, e.g. `▶ 3/7 写登录接口`.
+- Keep N unless your plan really changes. Only you send these, not sub-agents.
+
 How to work:
 - Commit after each task with a short message. Don't edit or commit anything under `.collab/`.
 - Before you finish, make sure the project builds and the tests pass. Stop any server or other long-running process you started, including its child processes.

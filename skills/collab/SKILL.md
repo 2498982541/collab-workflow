@@ -32,7 +32,7 @@ Run all of them from the project root.
 .collab/report.md      final report (Chinese)
 .collab/progress.md    run state - the source of truth for continuing (not committed)
 .collab/.gitignore     contains: runs/  screenshots/  progress.md  history/
-.collab/runs/          Codex prompts, logs, final messages; quota.log (written by the status line)
+.collab/runs/          Codex prompts, logs, final messages; quota.log (written by the status line); status.json and haiku.log (the status bar's view of the live run, and what Haiku's summaries of it cost)
 .collab/screenshots/   acceptance evidence
 ```
 
@@ -40,7 +40,7 @@ progress.md keeps:
 - branch and base commit;
 - `Status:` one of `planning`, `phase N`, `review`, `acceptance`, `done`, `escalated`;
 - `Now:` 2–4 Chinese words on what's happening (e.g. `写前端`, `截图检查`, `代码审查`). The user's status bar shows this, so keep it current;
-- the phase checklist (`- [x]` / `- [ ]`), with a one-line summary for each phase;
+- the phase checklist (`- [x]` / `- [ ]`), with a one-line summary and the estimated minutes for each phase, e.g. `- [ ] Phase 2: login API (~25m)`. The status bar weights its progress by these;
 - the current Codex run: name, effort, parallel, thread id, and the current sentinel minutes;
 - the fix-round count for the current phase or acceptance criterion;
 - servers you started yourself that are still running (port and PID), so they can be stopped even after a restart;
@@ -86,6 +86,7 @@ Write plan.md:
   - goal and tasks;
   - the acceptance criteria it covers;
   - `effort: medium|high` by difficulty;
+  - `minutes: N`, your estimate of the Codex run's length;
   - `ui: yes|no`;
   - `parallel: N` (1–5). Codex is slow, so split work that is truly independent across sub-agents. For N > 1, list the subtasks and the files each one owns. No two subtasks may touch the same file; shared contracts come first, or go to the integration step after the sub-agents finish.
 
@@ -168,7 +169,7 @@ Write `.collab/report.md` in Chinese:
 3. How to run the project.
 4. Known remaining issues.
 5. Branch name and a commit summary, plus a reminder that the user merges it themselves.
-6. Quota used per step, as a table: run `codex-status.mjs quota "<project root>"` and translate it.
+6. Quota used per step, as a table: run `codex-status.mjs quota "<project root>"` and translate it, including its last line on Haiku's status summaries.
 
 Then wrap up. The user may close this window the moment the notification appears, so everything must be finished before it, and nothing may matter only in chat:
 1. Stop every server listed in progress.md, and check that no project port is still listening.

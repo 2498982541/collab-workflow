@@ -93,6 +93,8 @@ Merge these in, and don't overwrite other keys. The user chose global bypass bec
   - It draws the progress at the right end of the row under the prompt. The engine lays that row out, so it follows the window width at once.
   - Plugin hooks are early access, normally switched on by a remote feature flag. With telemetry off, that flag never arrives and the plugin is listed but never loaded. So set `"CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1"` in `env`. It only turns the feature on locally and sends nothing.
   - To check: `claude -p "reply ok" --debug --debug-file <file>` in any folder, then the log must contain `hooks module collab@skills-dir loaded`.
+  - While Codex works, the plugin asks Claude Haiku 5.5 (`claude-haiku-5-5`) at most once a minute what it is doing, from the recent log with secrets masked, and shows the phrase at the end of the row. About 1.5k input tokens a call; the final report lists the total.
+- **Haiku 5.5 for `haiku`:** set `"ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-5-5"` in `env`, so the stuck-run inspector (a `model: haiku` subagent) uses Haiku 5.5. Claude Code versions released before it still map `haiku` to Haiku 4.5, which costs ten times as much.
   - Tested on Claude Code 2.1.283 and 2.1.288. If this version can't load it, nothing breaks: the status line notices and draws the progress on a second row itself.
 
 The Claude Code `Monitor` tool is not needed: the workflow uses its own background sentinel.
