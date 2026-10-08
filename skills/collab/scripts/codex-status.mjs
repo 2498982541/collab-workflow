@@ -4,9 +4,9 @@
 //   node codex-status.mjs inspect <root> <run>           diagnosis bundle for a quiet run (events, sub-agents, processes)
 //   node codex-status.mjs quota <root>                   quota change per step, from .collab/runs/quota.log
 //   node codex-status.mjs line                           Claude Code status line (session JSON on stdin)
-//   node codex-status.mjs plugin <session id>            for the plugin (hooks/register.tsx): the progress to draw, as JSON,
-//                                                        and when due, a question for Haiku about what Codex is doing
-//   node codex-status.mjs haiku                          for the plugin: Haiku's answer on stdin, shown with the progress
+//   node codex-status.mjs plugin <session id>            for the plugin (hooks/register.tsx): when due, a question for Haiku
+//                                                        about what Codex is doing, as JSON
+//   node codex-status.mjs haiku                          for the plugin: Haiku's answer on stdin, shown in the progress row
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -274,14 +274,14 @@ function brief(it) {
   return `${it.type}: ${clip(it.text ?? it.message ?? '', 150)}`
 }
 
-// What the live run is doing, read from its log incrementally and kept in .collab/runs/status.json: its latest
-// progress line, the commands still running (with when they were first seen), its recent events, Haiku's summary.
-// One writer at a time: the plugin while it's alive, otherwise the status line.
+// What the live run is doing, read from its log incrementally and kept in .collab/runs/status.json (the status line
+// writes it, the plugin only reads it): its latest progress line, the commands still running (with when they were
+// first seen), and its recent events.
 const statusFile = root => path.join(runs(root), 'status.json')
-const saveState = (root, s) => { try { fs.writeFileSync(statusFile(root), JSON.stringify(s)) } catch {} }
+const readJson = f => { try { return JSON.parse(fs.readFileSync(f, 'utf8')) } catch { return {} } }
+const writeJson = (f, v) => { try { fs.writeFileSync(f, JSON.stringify(v)) } catch {} }
 function runState(root, run) {
-  let s = {}
-  try { s = JSON.parse(fs.readFileSync(statusFile(root), 'utf8')) } catch {}
+  let s = readJson(statusFile(root))
   if (s.run !== run) s = { run, offset: 0, open: {}, recent: [] }
   let fd
   try {
@@ -306,11 +306,15 @@ function runState(root, run) {
       if (e.type === 'item.completed') s.recent.push(brief(it))
     }
     s.recent = s.recent.filter(Boolean).slice(-12)
+    writeJson(statusFile(root), s)
   } catch {} finally { if (fd !== undefined) fs.closeSync(fd) }
   return s
 }
 
-const HAIKU = 'claude-haiku-5-5'
+// Haiku's side, in .collab/runs/haiku.json (written through the plugin only): when it was last asked about which run,
+// and its answer. `haiku` is Claude Haiku 5.5 from Claude Code 2.1.293 on.
+const haikuFile = root => path.join(runs(root), 'haiku.json')
+const HAIKU = 'haiku'
 const HAIKU_SYSTEM = 'You watch the log of a coding agent. Reply with one short phrase in Chinese, at most 16 characters, '
   + 'saying what it is doing right now (not what it already finished), like 正在跑单元测试 or 修复登录接口报错. '
   + 'Only the phrase: no quotes, no trailing punctuation.'
@@ -321,13 +325,16 @@ function haikuPrompt(root, run, s) {
     'Recent events, oldest first:', ...s.recent, ...open].filter(Boolean).join('\n')
 }
 
-// The progress as colored pieces. The plugin draws them at the right end of the row under the prompt;
-// without the plugin, the status line draws them on a row of their own. `fill` marks the piece cut short
-// when the row is too narrow. `run` is the live Codex run and `s` its runState, if there is one.
-const SEP_PART = { text: ' · ', color: 'gray' }
+// The status line's second row, the workflow's progress:
+//   ◆ 阶段2/3 写前端  ━━━━━━──── 58% · 3/7 正在跑单元测试 · 2子代理
+// `run` is the live Codex run, `s` its runState and `h` Haiku's side, when there is a run.
 const REVIEW_MIN = 10, ACCEPT_MIN = 10  // rough weights of the two steps after the phases
-function collabParts({ root, status, progress }, run, s) {
-  if (/^escalated/i.test(status)) return [{ text: '⚠ collab 等你决定', color: 'yellow' }]
+const BAR = 10
+function collabRow({ root, status, progress }, run, s, h) {
+  if (/^escalated/i.test(status)) {
+    const why = clip(status.replace(/^escalated\W*/i, ''), 40)
+    return `${C.yellow}⚠ collab 等你决定${C.reset}${why ? SEP + C.grey + why + C.reset : ''}`
+  }
   const now = (progress.match(/Now:\s*(.+)/i)?.[1] ?? '').trim()
   // The phases from the checklist, each weighted by its estimate "(~25m)", 20 minutes without one.
   const phases = [...progress.matchAll(/^\s*- \[([ x])\](.*)$/gim)].map(m => ({ done: m[1] !== ' ', min: Number(m[2].match(/\(~(\d+)\s*m\)/)?.[1] ?? 20) }))
@@ -346,29 +353,24 @@ function collabParts({ root, status, progress }, run, s) {
   const doneMin = sum(phases.filter(p => p.done)) + (isAccept ? REVIEW_MIN : 0)
   const curMin = isPhase ? (phases.find(p => !p.done)?.min ?? 0) : isReview ? REVIEW_MIN : isAccept ? ACCEPT_MIN : 0
   const pct = Math.min(99, Math.round((100 * (doneMin + curMin * frac)) / (sum(phases) + REVIEW_MIN + ACCEPT_MIN)))
+  const filled = Math.round((pct / 100) * BAR)
+  const bar = `${C.cyan}${'━'.repeat(filled)}${C.grey}${'─'.repeat(BAR - filled)}${C.reset}`
 
-  const parts = [{ text: '◆ ', color: 'cyan' }, { text: stage + (now && now !== stage ? ' ' + now : '') }]
-  if (run && s.step) parts.push(SEP_PART, { text: `${s.step.k}/${s.step.n}` })
-  parts.push(SEP_PART, { text: `${pct}%`, bold: true })
+  const row = [`${C.cyan}◆${C.reset} ${stage}${now && now !== stage ? ' ' + now : ''}  ${bar} ${C.bold}${pct}%${C.reset}`]
   if (run) {
+    const activity = h.run === run && h.text && Date.now() - h.at < 180000 ? h.text : s.step?.text
+    const step = s.step ? `${C.grey}${s.step.k}/${s.step.n}${C.reset}` : ''
+    if (step || activity) row.push([step, activity].filter(Boolean).join(' '))
     const r = runInfo(root, run)
     const agents = r.files.filter(f => f.agent && f.type !== 'task_complete' && Date.now() - f.at < 1800000).length
-    if (agents) parts.push(SEP_PART, { text: `${agents}子代理`, color: 'gray' })
-    const quiet = Math.floor((Date.now() - r.last) / 60000)
-    if (quiet >= 10) parts.push(SEP_PART, { text: `上次运行${quiet}分钟前`, color: quiet >= 30 ? 'red' : 'yellow' })
+    if (agents) row.push(`${C.grey}${agents}子代理${C.reset}`)
     const busy = Math.floor(Math.max(0, ...Object.values(s.open).map(o => Date.now() - o.at)) / 60000)
-    if (busy >= 2) parts.push(SEP_PART, { text: `命令已跑${busy}分钟`, color: busy >= 10 ? 'yellow' : 'gray' })
-    const activity = s.summary && Date.now() - s.summary.at < 180000 ? s.summary.text : s.step?.text
-    if (activity) parts.push(SEP_PART, { text: activity, fill: true })
+    if (busy >= 2) row.push(`${busy >= 10 ? C.yellow : C.grey}命令已跑${busy}分钟${C.reset}`)
+    const quiet = Math.floor((Date.now() - r.last) / 60000)
+    if (quiet >= 10) row.push(`${quiet >= 30 ? C.red : C.yellow}上次运行${quiet}分钟前${C.reset}`)
   }
-  return parts
+  return row.join(SEP)
 }
-const ANSI = { cyan: C.cyan, yellow: C.yellow, red: C.red, gray: C.grey }
-const toAnsi = parts => parts.map(p => (p.bold ? C.bold : '') + (ANSI[p.color] ?? '') + p.text + C.reset).join('')
-
-// The plugin checks in on every poll; while it does, the progress is its to draw.
-const pluginMark = sid => path.join(os.tmpdir(), `collab-plugin-${sid}`)
-const pluginAlive = sid => Date.now() - (stat(pluginMark(sid))?.mtimeMs ?? 0) < 20000
 
 function statusLine(session) {
   const cl = claudeQuota(session)
@@ -392,16 +394,14 @@ function statusLine(session) {
     const row = [new Date().toISOString(), run.status, used(cl.five_hour), used(cl.seven_day), used(cx.five_hour), used(cx.seven_day)]
     try { fs.mkdirSync(runs(run.root), { recursive: true }); fs.appendFileSync(log, row.join('\t') + '\n') } catch {}
   }
-  if (pluginAlive(session.session_id)) return top
   const codex = currentRun(run.root)
   const s = codex && runState(run.root, codex)
-  if (s) saveState(run.root, s)
-  return `${top}\n${toAnsi(collabParts(run, codex, s))}`
+  return `${top}\n${collabRow(run, codex, s, codex ? readJson(haikuFile(run.root)) : {})}`
 }
 
-// For the plugin: whether this session ran /collab, and the pieces to draw. Runs in the session's directory.
+// For the plugin: whether this session ran /collab and, at most once a minute while Codex works and only when its log
+// moved since the last question, a question for Haiku about what Codex is doing. Runs in the session's directory.
 function pluginPoll(sid) {
-  try { fs.writeFileSync(pluginMark(sid), '') } catch {}
   cache.collabSessions ??= {}
   let transcript = cache.collabSessions[sid]?.path
   if (!transcript) {
@@ -411,30 +411,26 @@ function pluginPoll(sid) {
   const collab = !!transcript && ranCollab({ session_id: sid, transcript_path: transcript })
   if (transcript) cache.collabSessions[sid].path = transcript
   const act = collab && activeRun(process.cwd())
-  if (!act) return { collab, parts: [] }
-  const codex = currentRun(act.root)
-  const s = codex && runState(act.root, codex)
-  let ask
-  // At most once a minute, and only when the log moved since the last question, Haiku sums up what Codex is doing.
-  if (s && s.offset !== s.askedOffset && s.recent.length && Date.now() - (s.askedAt ?? 0) >= 60000) {
-    s.askedAt = Date.now()
-    s.askedOffset = s.offset
-    ask = { run: codex, model: HAIKU, system: HAIKU_SYSTEM, prompt: haikuPrompt(act.root, codex, s) }
-  }
-  if (s) saveState(act.root, s)
-  return { collab, parts: collabParts(act, codex, s), ask }
+  const codex = act && currentRun(act.root)
+  if (!codex) return { collab }
+  const s = readJson(statusFile(act.root))
+  const h = readJson(haikuFile(act.root))
+  if (s.run !== codex || !s.recent?.length) return { collab }
+  if (h.run === codex && (h.askedOffset === s.offset || Date.now() - h.askedAt < 60000)) return { collab }
+  writeJson(haikuFile(act.root), { ...(h.run === codex ? h : {}), run: codex, askedAt: Date.now(), askedOffset: s.offset })
+  return { collab, ask: { run: codex, model: HAIKU, system: HAIKU_SYSTEM, prompt: haikuPrompt(act.root, codex, s) } }
 }
 
-// Haiku's answer from the plugin ({ run, text, usage } on stdin): kept as the run's summary, its cost logged for the report.
+// Haiku's answer from the plugin ({ run, text, usage } on stdin): shown in the progress row, its cost logged for the report.
 async function haikuNote() {
   let input = ''
   for await (const chunk of process.stdin) input += chunk
   const { run, text, usage = {} } = JSON.parse(input)
   const act = activeRun(process.cwd())
   if (!act) return
-  const s = runState(act.root, run)
+  const h = readJson(haikuFile(act.root))
   const phrase = String(text ?? '').split('\n').map(l => l.trim()).find(Boolean)?.replace(/^["'“「]+|["'”」。.!！]+$/g, '').slice(0, 24)
-  if (phrase) { s.summary = { text: phrase, at: Date.now() }; saveState(act.root, s) }
+  if (phrase && h.run === run) writeJson(haikuFile(act.root), { ...h, text: phrase, at: Date.now() })
   const row = [new Date().toISOString(), run, usage.input_tokens ?? 0, usage.output_tokens ?? 0, usage.cache_read_input_tokens ?? 0, usage.cache_creation_input_tokens ?? 0]
   fs.appendFileSync(path.join(runs(act.root), 'haiku.log'), row.join('\t') + '\n')
 }
