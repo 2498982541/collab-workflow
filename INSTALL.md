@@ -19,7 +19,7 @@ Goal: make `/collab` fully work on this Windows 11 machine in one pass. Go throu
 | Playwright MCP | Claude screenshots the UI |
 | GitHub CLI, logged in | syncing this repo between machines |
 | a status line | shows both quotas and context use, and records quota for the final report |
-| the `collab` plugin (in `skills/collab`) | draws /collab progress at the right end of the row under the prompt; loads from the skills folder once function hooks are enabled (section 4) |
+| the `collab` plugin (in `skills/collab`) | asks Haiku what Codex is doing, for the progress row of the status line; loads from the skills folder once function hooks are enabled (section 4) |
 
 ## 1. Repo location
 
@@ -29,7 +29,7 @@ Skills are linked into place with junctions, not copied, so `git pull` in this r
 
 | Need | Check | If missing |
 |---|---|---|
-| Claude Code ≥ 2.1.234 | `claude --version` | Don't update it: the user keeps their installed version. If it's older than 2.1.234, tell them auto-continue after usage limits won't work and leave the upgrade to them. |
+| Claude Code ≥ 2.1.293 | `claude --version` | `npm i -g @anthropic-ai/claude-code@latest` (the user wants the latest). From 2.1.293, `haiku` is Claude Haiku 5.5. Upgrading the running session's own binary works: npm leaves the old one in a `node_modules/@anthropic-ai/.claude-code-*` folder, which can be deleted once that session has exited. |
 | git + identity | `git --version`, `git config --global user.name`, `git config --global user.email` | `winget install --id Git.Git`; ask the user for name and email, then set them |
 | Node.js ≥ 18 | `node --version` | `winget install --id OpenJS.NodeJS.LTS` |
 | Microsoft Edge | ships with Windows 11 | `winget install --id Microsoft.Edge` |
@@ -88,14 +88,12 @@ Merge these in, and don't overwrite other keys. The user chose global bypass bec
   "statusLine": { "type": "command", "command": "node \"C:/Users/<user>/.claude/skills/collab/scripts/codex-status.mjs\" line", "refreshInterval": 10 }
   ```
   - Every session gets one line: both 5-hour quotas with reset countdowns, plus context use, e.g. `● Claude 60% ↻ 2h13m · ● Codex 93% ↻ 4h05m · 上下文：50k  23%`. Grey means a remembered value, not a live one.
-  - The session that ran `/collab` logs quota to `.collab/runs/quota.log` for the final report. Its progress, e.g. `◆ 阶段2/3 写前端 · 65% · 3子代理`, is drawn by the plugin below.
-- **The `collab` plugin** needs one setting: `skills/collab` holds a plugin of function hooks (`.claude-plugin/`, `hooks/`, `types/`), and Claude Code loads it from the skills folder in every session.
-  - It draws the progress at the right end of the row under the prompt. The engine lays that row out, so it follows the window width at once.
+  - In the session that ran `/collab`, a second row shows the workflow's progress, e.g. `◆ 阶段2/3 写前端  ━━━━━━──── 58% · 3/7 正在跑单元测试 · 2子代理`: the phase, a bar weighted by each phase's estimated minutes, Codex's own step count, and what it is doing now. That session also logs quota to `.collab/runs/quota.log` for the final report.
+- **The `collab` plugin** needs one setting: `skills/collab` holds a plugin of function hooks (`.claude-plugin/`, `hooks/`), and Claude Code loads it from the skills folder in every session. It exists because a status line command can't call a model.
   - Plugin hooks are early access, normally switched on by a remote feature flag. With telemetry off, that flag never arrives and the plugin is listed but never loaded. So set `"CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1"` in `env`. It only turns the feature on locally and sends nothing.
   - To check: `claude -p "reply ok" --debug --debug-file <file>` in any folder, then the log must contain `hooks module collab@skills-dir loaded`.
-  - While Codex works, the plugin asks Claude Haiku 5.5 (`claude-haiku-5-5`) at most once a minute what it is doing, from the recent log with secrets masked, and shows the phrase at the end of the row. About 1.5k input tokens a call; the final report lists the total.
-- **Haiku 5.5 for `haiku`:** set `"ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-5-5"` in `env`, so the stuck-run inspector (a `model: haiku` subagent) uses Haiku 5.5. Claude Code versions released before it still map `haiku` to Haiku 4.5, which costs ten times as much.
-  - Tested on Claude Code 2.1.283 and 2.1.288. If this version can't load it, nothing breaks: the status line notices and draws the progress on a second row itself.
+  - While Codex works, it asks `haiku` (Claude Haiku 5.5) at most once a minute what Codex is doing, from the recent log with secrets masked; the phrase shows in the progress row. About 1.5k input tokens a call; the final report lists the total.
+  - Tested on Claude Code 2.1.293. If it can't load, nothing breaks: the progress row shows Codex's own step names instead.
 
 The Claude Code `Monitor` tool is not needed: the workflow uses its own background sentinel.
 
