@@ -18,7 +18,7 @@ Goal: make `/collab` fully work on this Windows 11 machine in one pass. Go throu
 | git with a commit identity, Node.js ≥ 18, Microsoft Edge | commits, the helper scripts, and Playwright screenshots |
 | Playwright MCP | Claude screenshots the UI |
 | GitHub CLI, logged in | syncing this repo between machines |
-| a status line | shows both quotas and context use, and records quota for the final report |
+| a status line | shows both quotas and context use, and records quota for the final report and for deciding when to park a run until Claude's quota resets |
 | the `collab` plugin (in `skills/collab`) | asks Haiku what Codex is doing, for the progress row of the status line; loads from the skills folder once function hooks are enabled (section 4) |
 
 ## 1. Repo location
@@ -89,10 +89,11 @@ Merge these in, and don't overwrite other keys. The user chose global bypass bec
   ```
   - Every session gets one line: both 5-hour quotas with reset countdowns, plus context use, e.g. `● Claude 60% ↻ 2h13m · ● Codex 93% ↻ 4h05m · 上下文：50k  23%`. Grey means a remembered value, not a live one.
   - In the session that ran `/collab`, a second row shows the workflow's progress, e.g. `◆ 阶段2/3 写前端  ━━━━━━──── 58% · 3/7 正在跑单元测试 · 2子代理`: the phase, a bar weighted by each phase's estimated minutes, Codex's own step count, and what it is doing now. That session also logs quota to `.collab/runs/quota.log` for the final report.
+  - `/collab` decides from the quota the status line last saw whether to park: when Claude's 5-hour window can't cover the next step, it waits for the reset with a one-line turn every 50 minutes, so the session's 1-hour prompt cache doesn't expire and the context isn't written again. Without the status line, it never parks.
 - **The `collab` plugin** needs one setting: `skills/collab` holds a plugin of function hooks (`.claude-plugin/`, `hooks/`), and Claude Code loads it from the skills folder in every session. It exists because a status line command can't call a model.
   - Plugin hooks are early access, normally switched on by a remote feature flag. With telemetry off, that flag never arrives and the plugin is listed but never loaded. So set `"CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1"` in `env`. It only turns the feature on locally and sends nothing.
   - To check: `claude -p "reply ok" --debug --debug-file <file>` in any folder, then the log must contain `hooks module collab@skills-dir loaded`.
-  - While Codex works, it asks `haiku` (Claude Haiku 5.5) at most once a minute what Codex is doing, from the recent log with secrets masked; the phrase shows in the progress row. About 1.5k input tokens a call; the final report lists the total.
+  - While Codex works, it asks `haiku` (Claude Haiku 5.5) at most once a minute what Codex is doing, from the recent log with secrets masked; the phrase shows in the progress row. About 1.5k input tokens a call; the final report lists the total. It doesn't ask while a run is parked.
   - Tested on Claude Code 2.1.293. If it can't load, nothing breaks: the progress row shows Codex's own step names instead.
 
 The Claude Code `Monitor` tool is not needed: the workflow uses its own background sentinel.

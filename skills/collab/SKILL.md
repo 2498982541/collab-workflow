@@ -32,7 +32,7 @@ Run all of them from the project root.
 .collab/report.md      final report (Chinese)
 .collab/progress.md    run state - the source of truth for continuing (not committed)
 .collab/.gitignore     contains: runs/  screenshots/  progress.md  history/
-.collab/runs/          Codex prompts, logs, final messages; quota.log (written by the status line); status.json and haiku.log (the status bar's view of the live run, and what Haiku's summaries of it cost)
+.collab/runs/          Codex prompts, logs, final messages; quota.log and transcript.txt (written by the status line: quota over time, and where this session's transcript is); status.json and haiku.log (the status bar's view of the live run, and what Haiku's summaries of it cost)
 .collab/screenshots/   acceptance evidence
 ```
 
@@ -44,6 +44,7 @@ progress.md keeps:
 - the current Codex run: name, effort, parallel, thread id, and the current sentinel minutes;
 - the fix-round count for the current phase or acceptance criterion;
 - servers you started yourself that are still running (port and PID), so they can be stopped even after a restart;
+- while parked, a `Parked until:` line with the CronCreate job ids (see "Usage limits");
 - a "Decisions made without asking" list.
 
 Update it at every step change.
@@ -77,6 +78,8 @@ Otherwise invoke the `grilling` skill and interview the user in Chinese until th
 - numbered acceptance criteria, each one checkable.
 
 ## Step 2 - Plan and visual skeleton
+
+Check Claude's quota first (see "Usage limits").
 
 Create branch `collab/<short-slug>` from HEAD and record that commit as the base in progress.md.
 
@@ -118,7 +121,7 @@ cd "<project root>" && node "<skill dir>/scripts/codex-status.mjs" watch "<proje
 
 Record the run in progress.md and end your turn.
 
-When woken by the run finishing, read the final message, then handle the outcome:
+When woken by the run finishing, check Claude's quota first (see "Usage limits"). Then read the final message and handle the outcome:
 - **Normal finish:** carry on.
 - **Usage limit** (the run hit one): see "Usage limits".
 - **Version error** (for example "model is not supported" or an unknown model): run `npm i -g @openai/codex@latest`, then re-launch the run once.
@@ -156,6 +159,8 @@ Don't judge the findings yourself — code quality is Codex's call.
 
 ## Step 5 - Acceptance (you)
 
+Check Claude's quota first (see "Usage limits").
+
 Check every acceptance criterion in spec.md for real: run the app or tests, and for UI, save screenshots into `.collab/screenshots/`. Judge the look as strictly as the function.
 
 - **UI that works but looks poor:** fix it yourself and commit — the look is your responsibility.
@@ -169,7 +174,7 @@ Write `.collab/report.md` in Chinese:
 3. How to run the project.
 4. Known remaining issues.
 5. Branch name and a commit summary, plus a reminder that the user merges it themselves.
-6. Quota used per step, as a table: run `codex-status.mjs quota "<project root>"` and translate it, including its last line on Haiku's status summaries.
+6. Quota used per step, as a table: run `codex-status.mjs quota "<project root>"` and translate it, including its lines on Haiku's status summaries and, if the run was parked, on each turn while parked (whether it found the context still in the cache).
 
 Then wrap up. The user may close this window the moment the notification appears, so everything must be finished before it, and nothing may matter only in chat:
 1. Stop every server listed in progress.md, and check that no project port is still listening.
@@ -198,15 +203,36 @@ Everything else, decide yourself and log it under "Decisions made without asking
 
 ## Usage limits
 
-- **Codex limit** (the log or final message says so):
-  1. `CronCreate` a one-shot with the prompt `Continue the collab run in <project root>: read <skill dir>/SKILL.md and follow its "Continue" section.` Set it a few minutes after the reset time Codex states, or 60 minutes from now if it gives none. Scheduled prompts can't use `/collab`; the skill is manual-only.
-  2. Note it in progress.md and end your turn.
-- **Claude's own 5-hour limit:** Claude Code continues automatically after the reset. Nothing to do.
-- **Weekly limit, or a closed window:** the user runs `/collab continue`.
+This session's prompt cache lives 1 hour after its last use, and reading from it costs no quota. A longer idle wait would make the next turn write the whole context again, which can cost a fifth of a 5-hour window. So a wait is parked instead: a one-line turn every 50 minutes keeps the cache warm until work can go on.
+
+**Checking Claude's quota.** Run `codex-status.mjs budget "<project root>"`. Its first word says what to do:
+- `GO`: carry on.
+- `PARK`: what's left of Claude's 5-hour window, keeping 5% for the wait, won't cover the next step and won't finish the run. Park until the window resets.
+- `WEEKLY`: Claude's weekly quota runs out first, so waiting for the 5-hour reset won't help. If a Codex run is still going, end your turn and wait for it to finish (it uses Codex's quota, not Claude's). Then record its result without checking it, stop every server listed in progress.md, set `Now: 等周额度`, run `keep-awake.ps1 stop` and `notify.ps1 -Title "collab 暂停" -Message "Claude 周额度将尽，重置后运行 /collab continue"`, and end. The user runs `/collab continue` after the weekly reset.
+
+**To park:**
+1. Start nothing new. A Codex run that's still going keeps going.
+2. Stop every server listed in progress.md.
+3. Create every CronCreate job that the command printed, all in one message, with the cron and prompt exactly as printed.
+4. In progress.md, set `Now: 等额度重置` and add the printed `Parked until:` line with the job ids. Note any finished Codex run you haven't checked yet.
+5. End your turn with one status line.
+
+**While parked** (progress.md has a `Parked until:` line), do only this:
+- On a keep-alive prompt, reply with one character and call no tools. That turn is what keeps the cache warm.
+- When a Codex run finishes, note in progress.md that it finished and hasn't been checked, then end your turn.
+- On `SILENT`, start the sentinel again with double the minutes, without the inspector.
+
+The continue job ends the wait.
+
+**Which limit:**
+- **Claude's 5-hour quota:** `budget` says `PARK` and prints the jobs.
+- **Codex limit** (the log or final message says so): run `codex-status.mjs park "<project root>" <reset>` with the reset time Codex states, as `HH:MM`, or `+60` if it gives none. Then park.
+- **Claude's 5-hour limit reached anyway** (a step cost more than expected): Claude Code continues automatically after the reset. Nothing to do.
+- **A closed window:** the user runs `/collab continue`.
 
 ## Continue
 
-1. Read `.collab/progress.md`. If status is `escalated`, get the user's decision first.
+1. Read `.collab/progress.md`. If status is `escalated`, get the user's decision first. If it has a `Parked until:` line, delete those of its jobs that haven't fired yet (CronDelete; an unknown id is fine) and remove the line. A Codex run it notes as finished but not checked is checked first, in step 4.
 2. Run `keep-awake.ps1 start`. Stop any server still listed in progress.md (check its port first: the PID may have been reused) and clear the list.
 3. If the current Codex run has no `.exit` file, check whether it's alive with `codex-proc.ps1 list <name>` (no output means not alive).
    - **Alive:** start its sentinel again (10 minutes) and end your turn.

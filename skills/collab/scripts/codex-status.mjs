@@ -2,7 +2,10 @@
 //   node codex-status.mjs watch <root> <run> <minutes>  sentinel: prints DONE when the run ends, or SILENT once
 //                                                        neither Codex nor any of its sub-agents has done anything for <minutes>
 //   node codex-status.mjs inspect <root> <run>           diagnosis bundle for a quiet run (events, sub-agents, processes)
-//   node codex-status.mjs quota <root>                   quota change per step, from .collab/runs/quota.log
+//   node codex-status.mjs quota <root>                   quota change per step, from .collab/runs/quota.log, and the
+//                                                        keep-alive turns while parked
+//   node codex-status.mjs budget <root>                  whether Claude's quota covers the next step: GO, PARK or WEEKLY
+//   node codex-status.mjs park <root> <HH:MM|ISO|+min>   the CronCreate jobs for waiting until then (a Codex limit)
 //   node codex-status.mjs line                           Claude Code status line (session JSON on stdin)
 //   node codex-status.mjs plugin <session id>            for the plugin (hooks/register.tsx): when due, a question for Haiku
 //                                                        about what Codex is doing, as JSON
@@ -162,21 +165,160 @@ function inspect(root, run) {
   } catch (err) { console.log('  (could not list: ' + clip(err.message, 200) + ')') }
 }
 
-function quotaTable(root) {
-  const rows = readSlice(path.join(runs(root), 'quota.log'), false, 1 << 20).split('\n').filter(Boolean).map(l => l.split('\t'))
-  if (!rows.length) return console.log('no quota.log')
+// quota.log rows: time, step, then used % of Claude 5h, Claude week, Codex 5h, Codex week ('' when not known).
+const quotaRows = root => readSlice(path.join(runs(root), 'quota.log'), false, 1 << 20).split('\n').filter(Boolean).map(l => l.split('\t'))
+
+// Percentage points used per step, for each of the four quotas. A step runs from its first row to the next step's
+// first row. A drop means that window rolled over and started again from 0, so the new value is all new use.
+function stepUsage(rows) {
   const steps = []
-  for (const r of rows) if (!steps.length || steps.at(-1).step !== r[1]) steps.push({ step: r[1], first: r, last: r }); else steps.at(-1).last = r
-  const d = (a, b, i) => (a[i] === '' || b[i] === '' ? '?' : `${Number(b[i]) - Number(a[i]) >= 0 ? '+' : ''}${Number(b[i]) - Number(a[i])}`)
-  const row = (name, a, b) => console.log(`${name} | ${hhmm(Date.parse(a[0]))} - ${hhmm(Date.parse(b[0]))} | ${d(a, b, 2)} | ${d(a, b, 3)} | ${d(a, b, 4)} | ${d(a, b, 5)}`)
-  console.log('step | from - to | Claude 5h | Claude week | Codex 5h | Codex week   (percentage points; a 5h window can drop when it rolls over)')
-  steps.forEach((s, i) => row(s.step, s.first, steps[i + 1]?.first ?? s.last))  // a step ends where the next one starts
-  row('total', rows[0], rows.at(-1))
+  rows.forEach((r, i) => {
+    if (steps.at(-1)?.step !== r[1]) steps.push({ step: r[1], from: r[0], to: r[0], used: [null, null, null, null] })
+    const s = steps.at(-1), next = rows[i + 1]
+    if (!next) return
+    s.to = next[0]
+    for (let c = 0; c < 4; c++) {
+      if (!r[c + 2] || !next[c + 2]) continue
+      const a = Number(r[c + 2]), b = Number(next[c + 2])
+      s.used[c] = (s.used[c] ?? 0) + (b >= a ? b - a : b)
+    }
+  })
+  return steps
+}
+
+function quotaTable(root) {
+  const rows = quotaRows(root)
+  if (!rows.length) return console.log('no quota.log')
+  const steps = stepUsage(rows)
+  const pts = v => (v == null ? '?' : `+${Math.round(v * 10) / 10}`)
+  const row = (name, from, to, used) => console.log(`${name} | ${hhmm(Date.parse(from))} - ${hhmm(Date.parse(to))} | ${used.map(pts).join(' | ')}`)
+  console.log('step | from - to | Claude 5h | Claude week | Codex 5h | Codex week   (percentage points used, across window resets)')
+  for (const s of steps) row(s.step, s.from, s.to, s.used)
+  row('total', rows[0][0], rows.at(-1)[0], [0, 1, 2, 3].map(c => steps.reduce((a, s) => (s.used[c] == null ? a : (a ?? 0) + s.used[c]), null)))
   const haiku = readSlice(path.join(runs(root), 'haiku.log'), false, 1 << 22).split('\n').filter(Boolean).map(l => l.split('\t'))
   if (haiku.length) {
     const [input, output] = [2, 3].map(i => haiku.reduce((a, r) => a + Number(r[i] || 0), 0))
     console.log(`Haiku 5.5 status summaries: ${haiku.length} calls, ${input} input + ${output} output tokens (about $${((input * 0.1 + output * 0.5) / 1e6).toFixed(3)} at API prices; counted in Claude 5h above)`)
   }
+  const turns = keepAliveTurns(root)
+  if (turns.length) {
+    const usedAt = (ms, after) => (after ? rows.find(r => Date.parse(r[0]) > ms) : rows.findLast(r => Date.parse(r[0]) <= ms))?.[2] || '?'
+    const k = n => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n))
+    console.log('while parked | time | tokens read from cache | tokens written | Claude 5h used before -> after')
+    for (const t of turns) console.log(`${t.kind} | ${hhmm(t.at)} | ${k(t.read)} | ${k(t.wrote)} | ${usedAt(t.at, false)} -> ${usedAt(t.done, true)}`)
+    const missed = turns.filter(t => t.wrote > t.read).length
+    console.log(`${turns.length} turns while parked; ${missed ? `${missed} found the cache gone and wrote the whole context again` : 'every one read the context from the cache'}`)
+  }
+}
+
+// Parking (SKILL.md "Usage limits"). This session's prompt cache lives 1 hour from its last use and reading it costs no
+// quota, so a one-line turn every 50 minutes keeps the whole context cached through a wait. Without it, the first turn
+// after the wait writes the context again, which can take a fifth of a 5-hour window.
+const RESERVE = 5          // points of Claude's 5-hour window kept back for the wait
+const STEP_DEFAULT = 8     // Claude's points per phase, until quota.log has a finished phase to go by
+const PING_EVERY = 50      // minutes between keep-alive turns
+const KEEPALIVE_MAX = 360  // minutes: a longer wait gets only the continue, not keep-alive turns
+const PING_PROMPT = 'collab keep-alive ping: reply with one character only, and call no tools.'
+const CONTINUE_MARK = 'Continue the collab run in '
+const fwd = p => p.replace(/\\/g, '/')
+const when = sec => {
+  const d = new Date(sec * 1000)
+  return d.toDateString() === new Date().toDateString() ? hhmm(d) : `${d.getMonth() + 1}-${d.getDate()} ${hhmm(d)}`
+}
+
+// Claude's 5-hour points per step name (a step can come back, e.g. after an escalation).
+function claudeSteps(root) {
+  const cost = {}
+  for (const s of stepUsage(quotaRows(root))) if (s.used[0] != null) cost[s.step] = (cost[s.step] ?? 0) + s.used[0]
+  return cost
+}
+
+// The CronCreate jobs for waiting until `until` (seconds): the continue two minutes after it, and keep-alive turns
+// counted back from there, so that no gap is longer than PING_EVERY + 5 minutes.
+function parkPlan(root, until) {
+  const now = Date.now() / 1000
+  const cont = Math.ceil(until / 60) * 60 + 120
+  const long = cont - now > KEEPALIVE_MAX * 60
+  const pings = []
+  if (!long) for (let t = cont - PING_EVERY * 60; t > now + 300; t -= PING_EVERY * 60) pings.unshift(t)
+  const cron = t => { const d = new Date(t * 1000); return `${d.getMinutes()} ${d.getHours()} ${d.getDate()} ${d.getMonth() + 1} *` }
+  const prompt = `${CONTINUE_MARK}${fwd(root)}: read ${fwd(path.dirname(HERE))}/SKILL.md and follow its "Continue" section.`
+  return [
+    long && `The wait is over ${KEEPALIVE_MAX / 60} hours, so no keep-alive: continuing will write the cache again.`,
+    'Create these CronCreate jobs in one message, each with recurring: false and exactly this cron and prompt (the rest of the line):',
+    ...pings.map(t => `  keep-alive at ${when(t)}: cron "${cron(t)}", prompt: ${PING_PROMPT}`),
+    `  continue at ${when(cont)}: cron "${cron(cont)}", prompt: ${prompt}`,
+    `Then add this line to progress.md, with the job ids: Parked until: ${when(cont)} (jobs: ...)`,
+  ].filter(Boolean).join('\n')
+}
+
+// Whether Claude's quota covers the next step: GO, PARK (with the jobs for the wait) or WEEKLY. The quota is what the
+// status line last saw, so it's as fresh as the last reply.
+function budget(dir) {
+  const act = activeRun(path.resolve(dir))
+  const root = act?.root ?? path.resolve(dir)
+  let q = {}
+  try { q = JSON.parse(fs.readFileSync(CLAUDE_QUOTA, 'utf8')) } catch {}
+  if (!q.five_hour) return console.log("GO: Claude's quota isn't known yet (the status line records it after a reply)")
+  const now = Date.now() / 1000
+  const left = w => (w?.resets_at > now ? Math.max(0, Math.round(100 - w.used)) : 100)  // a rolled-over window is full again
+  const five = left(q.five_hour), week = left(q.seven_day)
+  const status = act?.status ?? ''
+  const phases = Object.entries(claudeSteps(root)).filter(([s]) => /^phase/i.test(s) && s !== status).map(([, c]) => c)
+  const step = Math.max(1, Math.ceil(phases.length ? Math.max(...phases) : STEP_DEFAULT))
+  // What's left, in phases: the open ones, then review (half a phase) and acceptance with the report (one and a half).
+  const open = (act?.progress.match(/^\s*- \[ \]/gm) ?? []).length
+  const need = Math.ceil(step * (/^accept/i.test(status) ? 1.5 : /^review/i.test(status) ? 2 : open + 2))
+  const head = `Claude 5h ${five}% left${five < 100 ? `, resets ${when(q.five_hour.resets_at)}` : ''}, week ${week}% left; `
+    + `about ${step}% per phase${phases.length ? '' : ' (a guess until a phase is done)'}, about ${need}% to finish`
+  if (week < need && week - RESERVE < step) {
+    return console.log(`WEEKLY: ${head}. The weekly quota runs out first (resets ${when(q.seven_day.resets_at)}), so waiting for the 5-hour reset won't help.`)
+  }
+  if (five >= need || five - RESERVE >= step) return console.log(`GO: ${head}`)
+  console.log(`PARK: ${head}. That won't cover the next step with ${RESERVE}% kept for the wait.\n${parkPlan(root, q.five_hour.resets_at)}`)
+}
+
+// `park <root> <reset>`: the jobs for waiting out a Codex limit. The reset is HH:MM (the next one), an ISO time or +minutes.
+function park(dir, at = '') {
+  const now = Date.now()
+  let t = NaN, m
+  if ((m = /^\+(\d+)$/.exec(at))) t = now + Number(m[1]) * 60000
+  else if ((m = /^(\d{1,2}):(\d{2})$/.exec(at))) {
+    const d = new Date()
+    d.setHours(Number(m[1]), Number(m[2]), 0, 0)
+    t = d.getTime() > now ? d.getTime() : d.getTime() + 86400000
+  } else t = Date.parse(at)
+  if (Number.isNaN(t)) return console.log('usage: codex-status.mjs park <root> <HH:MM | ISO time | +minutes>')
+  console.log(parkPlan(activeRun(path.resolve(dir))?.root ?? path.resolve(dir), t / 1000))
+}
+
+// The keep-alive and continue turns in this session's transcript (its path is saved by the status line), with what
+// each read from the cache and wrote to it. Prompts quoted in a tool result or in the loaded skill don't count.
+function keepAliveTurns(root) {
+  let text = ''
+  try { text = fs.readFileSync(readSlice(path.join(runs(root), 'transcript.txt'), false, 4096).trim(), 'utf8') } catch { return [] }
+  const turns = []
+  let open = null
+  for (const l of text.split('\n')) {
+    const marked = l.includes(PING_PROMPT) || l.includes(CONTINUE_MARK)
+    if (!marked && !(open && l.includes('"usage"'))) continue
+    let e
+    try { e = JSON.parse(l) } catch { continue }
+    if (e.isSidechain) continue
+    if (e.type === 'user' && marked) {
+      const c = e.message?.content
+      const blocks = Array.isArray(c) ? c : [{ type: 'text', text: String(c ?? '') }]
+      const t = blocks.map(b => (b.type === 'text' ? b.text : '')).join('')
+      if (blocks.some(b => b.type === 'tool_result') || t.length > 2000) continue
+      open = { kind: t.includes(PING_PROMPT) ? 'keep-alive' : 'continue', at: Date.parse(e.timestamp) }
+      turns.push(open)
+    } else if (open && e.type === 'assistant' && e.message?.usage) {
+      const u = e.message.usage
+      Object.assign(open, { read: u.cache_read_input_tokens ?? 0, wrote: (u.cache_creation_input_tokens ?? 0) + (u.input_tokens ?? 0), done: Date.parse(e.timestamp) })
+      open = null
+    }
+  }
+  return turns.filter(t => t.done)
 }
 
 // Codex quota from the most recent rate-limit record in its rollout files, cached for 30 s.
@@ -397,6 +539,9 @@ function statusLine(session) {
     const row = [new Date().toISOString(), run.status, used(cl.five_hour), used(cl.seven_day), used(cx.five_hour), used(cx.seven_day)]
     try { fs.mkdirSync(runs(run.root), { recursive: true }); fs.appendFileSync(log, row.join('\t') + '\n') } catch {}
   }
+  // Where this session's transcript is, for the report's keep-alive lines.
+  const tf = path.join(runs(run.root), 'transcript.txt')
+  if (session.transcript_path && readSlice(tf, false, 4096) !== session.transcript_path) try { fs.writeFileSync(tf, session.transcript_path) } catch {}
   const codex = currentRun(run.root)
   const s = codex && runState(run.root, codex)
   return `${top}\n${collabRow(run, codex, s, codex ? readJson(haikuFile(run.root)) : {})}`
@@ -414,7 +559,7 @@ function pluginPoll(sid) {
   const collab = !!transcript && ranCollab({ session_id: sid, transcript_path: transcript })
   if (transcript) cache.collabSessions[sid].path = transcript
   const act = collab && activeRun(process.cwd())
-  const codex = act && currentRun(act.root)
+  const codex = act && !/^Parked until:/im.test(act.progress) && currentRun(act.root)  // no questions while parked: they cost Claude's quota
   if (!codex) return { collab }
   const s = readJson(statusFile(act.root))
   const h = readJson(haikuFile(act.root))
@@ -442,6 +587,8 @@ const [cmd, ...args] = process.argv.slice(2)
 if (cmd === 'watch') await watch(args[0], args[1], Number(args[2] ?? 10))
 else if (cmd === 'inspect') inspect(args[0], args[1])
 else if (cmd === 'quota') quotaTable(args[0])
+else if (cmd === 'budget') budget(args[0] ?? '.')
+else if (cmd === 'park') park(args[0] ?? '.', args[1])
 else if (cmd === 'plugin') { console.log(JSON.stringify(pluginPoll(args[0]))); saveCache() }
 else if (cmd === 'haiku') await haikuNote()
 else if (cmd === 'line') {
@@ -451,4 +598,4 @@ else if (cmd === 'line') {
   try { session = JSON.parse(input) } catch {}
   try { process.stdout.write(statusLine(session)) } catch { process.stdout.write('') }
   saveCache()
-} else console.log('usage: codex-status.mjs watch|inspect|quota|line|plugin ...')
+} else console.log('usage: codex-status.mjs watch|inspect|quota|budget|park|line|plugin ...')
