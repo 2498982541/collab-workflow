@@ -188,13 +188,15 @@ function stepUsage(rows) {
 
 function quotaTable(root) {
   const rows = quotaRows(root)
-  if (!rows.length) return console.log('no quota.log')
-  const steps = stepUsage(rows)
-  const pts = v => (v == null ? '?' : `+${Math.round(v * 10) / 10}`)
-  const row = (name, from, to, used) => console.log(`${name} | ${hhmm(Date.parse(from))} - ${hhmm(Date.parse(to))} | ${used.map(pts).join(' | ')}`)
-  console.log('step | from - to | Claude 5h | Claude week | Codex 5h | Codex week   (percentage points used, across window resets)')
-  for (const s of steps) row(s.step, s.from, s.to, s.used)
-  row('total', rows[0][0], rows.at(-1)[0], [0, 1, 2, 3].map(c => steps.reduce((a, s) => (s.used[c] == null ? a : (a ?? 0) + s.used[c]), null)))
+  if (!rows.length) console.log('no quota.log')
+  else {
+    const steps = stepUsage(rows)
+    const pts = v => (v == null ? '?' : `+${Math.round(v * 10) / 10}`)
+    const row = (name, from, to, used) => console.log(`${name} | ${hhmm(Date.parse(from))} - ${hhmm(Date.parse(to))} | ${used.map(pts).join(' | ')}`)
+    console.log('step | from - to | Claude 5h | Claude week | Codex 5h | Codex week   (percentage points used, across window resets)')
+    for (const s of steps) row(s.step, s.from, s.to, s.used)
+    row('total', rows[0][0], rows.at(-1)[0], [0, 1, 2, 3].map(c => steps.reduce((a, s) => (s.used[c] == null ? a : (a ?? 0) + s.used[c]), null)))
+  }
   const haiku = readSlice(path.join(runs(root), 'haiku.log'), false, 1 << 22).split('\n').filter(Boolean).map(l => l.split('\t'))
   if (haiku.length) {
     const [input, output] = [2, 3].map(i => haiku.reduce((a, r) => a + Number(r[i] || 0), 0))
@@ -207,7 +209,7 @@ function quotaTable(root) {
     console.log('while parked | time | tokens read from cache | tokens written | Claude 5h used before -> after')
     for (const t of turns) console.log(`${t.kind} | ${hhmm(t.at)} | ${k(t.read)} | ${k(t.wrote)} | ${usedAt(t.at, false)} -> ${usedAt(t.done, true)}`)
     const missed = turns.filter(t => t.wrote > t.read).length
-    console.log(`${turns.length} turns while parked; ${missed ? `${missed} found the cache gone and wrote the whole context again` : 'every one read the context from the cache'}`)
+    console.log(`${turns.length} turn${turns.length === 1 ? "" : "s"} while parked; ${missed ? `${missed} found the cache gone and wrote the whole context again` : 'every one read the context from the cache'}`)
   }
 }
 
