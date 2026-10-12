@@ -102,7 +102,7 @@ The Claude Code `Monitor` tool is not needed: the workflow uses its own backgrou
 For each of `collab` and `grilling` in `skills/` (`grilling` is the requirements interview that `/collab` uses):
 - If `%USERPROFILE%\.claude\skills\<name>` doesn't exist, link it. Keep the single quotes so Git Bash doesn't expand `$env`:
   `powershell -NoProfile -Command 'New-Item -ItemType Junction -Path "$env:USERPROFILE\.claude\skills\<name>" -Target "<repo>\skills\<name>"'`
-- If `grilling` already exists as a plain folder (an upstream copy), replace it with the link: this repo's version is changed to ask questions in Chinese.
+- If `grilling` already exists as a plain folder (an upstream copy), replace it with the link: this repo's version is changed to ask questions in Chinese, always through the question tool (in batches of up to 4).
 - If `%USERPROFILE%\.claude\skills\grill-me` exists, delete it. It's only a one-line alias for `grilling`, and the user chose to keep just `/grilling`.
 - If `collab` exists as a plain folder (an older copy), ask the user before replacing it.
 

@@ -27,6 +27,7 @@ Progress lines (the user's status bar is built from them):
 How to work:
 - Commit after each task with a short message. Don't edit or commit anything under `.collab/`.
 - Before you finish, make sure the project builds and the tests pass. Stop any server or other long-running process you started, including its child processes.
+- If a port you need is already in use, use another free port instead of killing whatever holds it. Don't hard-code a port the project can't override.
 - Nobody will answer questions. If something is ambiguous, pick the simplest reasonable option and mention it in your final message.
 
 Final message, kept short: what you did, how you verified it, any decisions or deviations from the plan, and anything left unfinished.

@@ -7,25 +7,25 @@ Interview the user relentlessly until you reach a shared understanding. Ask in C
 
 Work the tree in **rounds**. The **frontier** is every decision whose prerequisites are already settled: the questions you can ask _now_ without guessing at answers you haven't heard yet. Ask the whole frontier in one round using the question format below, and give your recommended answer for each question. Then wait for the user's answers before the next round.
 
-## Choose the question format for each round
+## Ask every round with AskUserQuestion
 
-Count the questions on the current frontier, not the total questions you expect across the session. Re-evaluate the format after each round of answers.
+Always ask through the **AskUserQuestion** tool, however many questions the frontier has. Do not present the questions as a prose list in the conversation.
 
-### 1-4 questions: use AskUserQuestion
+The tool takes at most 4 questions per call. When the frontier has more, split it into batches of up to 4 and call the tool once per batch, one call at a time: wait for each response before sending the next batch.
 
-Call the **AskUserQuestion** tool once with all questions in this round. Do not present the questions as a prose list in the conversation.
+- Before the first batch of a multi-batch round, say in one short line how many questions and batches this round has (for example "本轮共 11 个问题，分 3 组").
+- Put the most consequential questions in the first batch, and keep related questions in the same batch.
+- Before sending each later batch, check the answers so far. If an answer (especially a custom response) makes a queued question moot or changes it, drop or rewrite that question; questions it newly opens up belong to the next round.
 
-- Give each question a concise `header` (at most 12 characters), a self-contained `question`, and 2-4 meaningful `options`.
+For each question:
+
+- Give each question a concise `header` (at most 12 characters), a self-contained `question`, and 2-4 meaningful `options`. If the question needs background, put it briefly in the `question` text.
 - Put your recommended option first, mark its label with `(Recommended)`, and explain the reason or trade-off in its `description`. Give the other options useful descriptions too.
+- For open-ended questions, still offer 2-4 concrete candidate answers, recommended first; the user can type their own.
 - Set `multiSelect: false` for mutually exclusive choices; use `true` only when several answers can apply together.
 - The tool provides an Other/custom-response option automatically. Let the user use it for open-ended answers or corrections; do not add a duplicate Other option or treat a suggested answer as confirmed.
-- Wait for the tool response before continuing. If the tool is unavailable or its call fails, briefly explain that and use the conversation format below for this round.
 
-### 5 or more questions: list them in the conversation
-
-Present the whole frontier as numbered questions in one message, with a recommended answer for each. Do not split a large frontier into multiple AskUserQuestion calls just to fit the tool's question limit. Wait for the user's answers before moving to the next round.
-
-Use this format for conversation questions:
+If the tool is unavailable or its call fails, briefly explain that and list the remaining questions of this round in the conversation instead, using this format:
 
 ```
 ❓ **Q1** - **<question title>**: <question body, might be multiple paragraphs, including multiple choices>

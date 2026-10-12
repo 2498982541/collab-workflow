@@ -107,7 +107,7 @@ async function watch(root, run, minutes) {
   for (;;) {
     if (finished(root, run)) { console.log(`DONE ${run}`); break }
     const pid = wrapperPid(root, run)
-    if (pid && !alive(pid)) { console.log(`DONE ${run} (codex-run.ps1 is gone without an exit code)`); break }
+    if (pid && !alive(pid)) { console.log(`DONE ${run} (codex-run is gone without an exit code)`); break }
     const last = Math.max(runInfo(root, run).last, t0)
     if (Date.now() - last >= minutes * 60000) {
       console.log(`SILENT ${run}: no activity from Codex or its sub-agents for ${Math.round((Date.now() - last) / 60000)} minutes (last at ${hhmm(last)})`)
@@ -154,7 +154,10 @@ function inspect(root, run) {
   }
   console.log('\nprocesses of this run (cpu = CPU seconds used during a 5 s sample):')
   try {
-    const out = execFileSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(HERE, 'codex-proc.ps1'), 'list', run, '5'], { cwd: root, encoding: 'utf8' })
+    const [exe, argv] = process.platform === 'win32'
+      ? ['powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(HERE, 'codex-proc.ps1'), 'list', run, '5']]
+      : ['bash', [path.join(HERE, 'codex-proc.sh'), 'list', run, '5']]
+    const out = execFileSync(exe, argv, { cwd: root, encoding: 'utf8' })
     console.log(redact(out).trim() || '  (none - the run is not alive)')
   } catch (err) { console.log('  (could not list: ' + clip(err.message, 200) + ')') }
 }
