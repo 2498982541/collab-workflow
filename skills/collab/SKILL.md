@@ -129,7 +129,18 @@ Commit spec, plan, and skeleton.
 
 ## Running Codex
 
-Every Codex write run is built from `codex-task.md`: fill in the task and notes, and save the result as `.collab/runs/<name>.prompt.md`. Give every launch a new name and never reuse one (`phase-2`, `phase-2.fix-1`, `phase-2.retry-1`). Then start two background commands, both with Bash `run_in_background: true`:
+Each launch reads its prompt from `.collab/runs/<name>.prompt.md`. Give every launch a new name and never reuse one (`phase-2`, `phase-2.fix-1`, `phase-2.retry-1`).
+- **A new thread** (a phase, a fresh fix run): fill in `codex-task.md`. `{{TASK}}` is the task; `{{NOTES}}` is what the run needs beyond plan.md (a fix list with its evidence), or nothing. Keep the paragraph that starts with `UI:` only when the task touches the UI.
+- **A resumed thread** (`-Resume`, for a fix round or a stuck run): Codex already has the rules, so send only what's new:
+  ```
+  Your task: <one line, e.g. Fix what the phase 2 check found>
+
+  <the fix list or the inspector's findings, with the evidence>
+
+  Same rules as before: commit, and end with the same kind of final message.
+  ```
+
+Then start two background commands, both with Bash `run_in_background: true`:
 
 - the run: `codex-run -Name <name> -Effort <medium|high> -Parallel <N>`
 - the sentinel: `node "<skill dir>/scripts/codex-status.mjs" watch "<project root>" <name> 10`
@@ -180,7 +191,7 @@ For each phase in plan.md:
 1. Fill `codex-review.md` (`{{BASE}}` = the base commit) into `.collab/runs/review.prompt.md`.
 2. Commit anything uncommitted, then launch it the usual way, with `-Name review -Effort high`. It runs with full access like every other run: Codex's read-only sandbox needs a Windows sandbox setup that can fail and leave Codex's own setup unfinished. The prompt tells Codex not to modify files.
 3. If `git status --porcelain` then shows changes anyway, run `git stash push -u -m "collab: edits made during review"` and log it under "Decisions made without asking".
-4. If the result isn't `NO_ISSUES`, make one fresh write run with task "Fix the issues listed in .collab/runs/review.last.md" and effort `medium`.
+4. If the result isn't `NO_ISSUES`, make one fresh write run with task "Fix the issues listed in .collab/runs/review.last.md, P1 first" and effort `medium`.
 
 Don't judge the findings yourself — code quality is Codex's call.
 
