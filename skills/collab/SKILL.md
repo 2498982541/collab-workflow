@@ -11,13 +11,21 @@ You are the conductor. Codex CLI is your implementation subagent. You own requir
 
 Talk to the user in Chinese. Everything else (files, prompts, commit messages) is in English, except `.collab/report.md` and the `Now:` line in progress.md, which are Chinese.
 
-After requirements are confirmed, run to the end without stopping. The session is in bypass permissions mode (INSTALL.md sets it), so nothing should prompt. Only stop for the escalations listed below.
+After requirements are confirmed, run to the end without stopping. The session is in bypass permissions mode (the install sets it), so nothing should prompt. Only stop for the escalations listed below.
 
-`<skill dir>` means this skill's base directory, shown above when the skill loads. Script commands:
-- `.ps1` scripts: `powershell -NoProfile -ExecutionPolicy Bypass -File "<skill dir>/scripts/<name>.ps1" ...`
-- `codex-status.mjs`: `node "<skill dir>/scripts/codex-status.mjs" ...`
+## Platform
 
-Run all of them from the project root.
+This skill runs on Windows (Claude Code's Bash tool is Git Bash) or inside WSL; your environment says which. `<skill dir>` means this skill's base directory, shown above when the skill loads. The helper scripts appear below by name alone, e.g. `keep-awake start`. Every one has a `.ps1` and a `.sh` version that take the same arguments. Run everything from the project root.
+
+| | Windows | WSL |
+|---|---|---|
+| helper script `<name>` | `powershell -NoProfile -ExecutionPolicy Bypass -File "<skill dir>/scripts/<name>.ps1" ...` | `bash "<skill dir>/scripts/<name>.sh" ...` |
+| `codex-status.mjs`, `free-port.mjs` | `node "<skill dir>/scripts/<name>.mjs" ...` | same |
+| update Codex | `npm i -g @openai/codex@latest` | `codex update` |
+| start a server | Bash with `run_in_background: true`; its PID is the last column of `netstat -ano \| grep LISTENING \| grep ":<port> "` | `setsid nohup <command> > <log> 2>&1 &` (so it doesn't hold the Bash tool); its PID is `$!` |
+| stop a server | `taskkill //PID <pid> //T //F` | `kill <pid>`, then `kill -9 <pid>` if it's still there a few seconds later |
+
+`codex-run` ends a run by killing everything the run started: through a Windows job object, or in WSL through a systemd user scope. In WSL, `notify` and `keep-awake` reach Windows through WSL interop.
 
 ## Saving tokens
 
@@ -60,10 +68,10 @@ If the argument is `continue`, skip this step and go to "Continue".
 2. If `.collab/progress.md` says `done` from an earlier run, move that run's files into `.collab/history/<old-slug>/` and start fresh.
 3. Check that Codex works while the user is still here:
    ```bash
-   cd "$TEMP" && rm -f collab-codex-check.txt && echo "Reply with exactly: OK" | codex exec --skip-git-repo-check -c model_reasoning_effort=low -o collab-codex-check.txt - >/dev/null 2>&1; cat collab-codex-check.txt
+   cd "${TEMP:-/tmp}" && rm -f collab-codex-check.txt && echo "Reply with exactly: OK" | codex exec --skip-git-repo-check -c model_reasoning_effort=low -o collab-codex-check.txt - >/dev/null 2>&1; cat collab-codex-check.txt
    ```
-   If it doesn't print `OK`, run `npm i -g @openai/codex@latest` and try again. If it still fails, tell the user why and stop.
-4. Start keep-awake: `keep-awake.ps1 start`.
+   If it doesn't print `OK`, update Codex and try again. If it still fails, tell the user why and stop.
+4. Start keep-awake: `keep-awake start`.
 
 ## Step 1 - Align (the only interactive step)
 
@@ -106,12 +114,10 @@ Commit spec, plan, and skeleton.
 
 Every Codex write run is built from `codex-task.md`: fill in the task and notes, and save the result as `.collab/runs/<name>.prompt.md`. Give every launch a new name and never reuse one (`phase-2`, `phase-2.fix-1`, `phase-2.retry-1`). Then start two background commands, both with Bash `run_in_background: true`:
 
-```bash
-cd "<project root>" && powershell -NoProfile -ExecutionPolicy Bypass -File "<skill dir>/scripts/codex-run.ps1" -Name <name> -Effort <medium|high> -Parallel <N>
-cd "<project root>" && node "<skill dir>/scripts/codex-status.mjs" watch "<project root>" <name> 10
-```
+- the run: `codex-run -Name <name> -Effort <medium|high> -Parallel <N>`
+- the sentinel: `node "<skill dir>/scripts/codex-status.mjs" watch "<project root>" <name> 10`
 
-**`codex-run.ps1`, the run itself:**
+**`codex-run`, the run itself:**
 - It writes `.collab/runs/<name>.jsonl` (events), `<name>.last.md` (the final message) and `<name>.exit`.
 - It exits once the turn is done, even if Codex hangs on something it left running. It then kills everything the run started, so a finished run always wakes you.
 - Codex uses the machine's default model; sub-agents use the same one. Effort is always explicit, because the machine default may be `xhigh`.
@@ -124,7 +130,7 @@ Record the run in progress.md and end your turn.
 When woken by the run finishing, check Claude's quota first (see "Usage limits"). Then read the final message and handle the outcome:
 - **Normal finish:** carry on.
 - **Usage limit** (the run hit one): see "Usage limits".
-- **Version error** (for example "model is not supported" or an unknown model): run `npm i -g @openai/codex@latest`, then re-launch the run once.
+- **Version error** (for example "model is not supported" or an unknown model): update Codex, then re-launch the run once.
 - **No final message, for some other reason:** re-launch once. If it fails again, escalate.
 
 On `DONE <name>` from the sentinel: if you haven't handled that run's finish yet, handle it now (read `<name>.last.md` and `.exit`); otherwise do nothing. Exits of runs you stopped yourself need nothing either.
@@ -133,9 +139,12 @@ When woken by `SILENT`, don't investigate yourself:
 1. Spawn a subagent with `model: haiku`, telling it: "Run `node "<skill dir>/scripts/codex-status.mjs" inspect "<project root>" <name>` and judge whether this Codex run is healthy or stuck. Healthy means a long build or test is still using CPU, or sub-agents are still working. Stuck means something like waiting on a foreground server or an interactive prompt, or a process that is dead or idle. Reply with one line: `HEALTHY: <why>` or `STUCK: <why>`."
 2. Act on its answer:
    - **HEALTHY:** start the sentinel again. If the SILENT line's "last at" time is later than when you started that sentinel, the run did something in between, so use 10 minutes. Otherwise double the previous minutes (10 → 20 → 40). After 3 HEALTHY verdicts in a row with no activity in between, treat it as STUCK.
-   - **STUCK:** run `codex-proc.ps1 stop <name>`, then resume the thread under a new name, with a note on what the inspector found. This counts as a fix round.
+   - **STUCK:** run `codex-proc stop <name>`, then resume the thread under a new name, with a note on what the inspector found. This counts as a fix round.
 
-Servers you start yourself (skeleton renders, UI checks, acceptance) survive TaskStop on Windows, and survive the user closing this window. Before you start the app and after you stop it, free its port: find the PID with `netstat -ano | grep LISTENING | grep ":<port> "`, then run `taskkill //PID <pid> //T //F`. Record each one in progress.md while it runs, and remove it once stopped.
+Servers you start yourself (skeleton renders, UI checks, acceptance) outlive TaskStop and the user closing this window, so keep track of them:
+- Pick the port with `free-port.mjs <preferred port>`. It prints the first port from there that can really be bound. Start the app on that port (`PORT=...` or the framework's port flag).
+- Start and stop servers as the Platform table shows. Record each one's port and PID in progress.md while it runs, and remove it once stopped.
+- Never kill a process that isn't listed in progress.md, even if it holds a port you want. It may be one of the user's programs; under WSL mirrored networking it may even be a Windows program that `ss` can't see.
 
 ## Step 3 - Phases
 
@@ -179,8 +188,8 @@ Write `.collab/report.md` in Chinese:
 Then wrap up. The user may close this window the moment the notification appears, so everything must be finished before it, and nothing may matter only in chat:
 1. Stop every server listed in progress.md, and check that no project port is still listening.
 2. Set the status to `done`, then commit everything that remains (progress.md itself is not committed).
-3. Run `keep-awake.ps1 stop`.
-4. Run `notify.ps1 -Title "collab 完成" -Message "<one line>"` as the last command.
+3. Run `keep-awake stop`.
+4. Run `notify -Title "collab 完成" -Message "<one line>"` as the last command.
 5. Give a short Chinese summary in chat, pointing to `.collab/report.md`. This is a courtesy; report.md must already say everything.
 
 Never merge or push.
@@ -196,7 +205,7 @@ To escalate:
 1. Set status `escalated` with the reason.
 2. Delete any pending `CronCreate` job, and stop every server listed in progress.md.
 3. Stop keep-awake.
-4. Run `notify.ps1` with a one-line Chinese message.
+4. Run `notify` with a one-line Chinese message.
 5. Explain the problem to the user in Chinese, with options.
 
 Everything else, decide yourself and log it under "Decisions made without asking".
@@ -208,7 +217,7 @@ This session's prompt cache lives 1 hour after its last use, and reading from it
 **Checking Claude's quota.** Run `codex-status.mjs budget "<project root>"`. Its first word says what to do:
 - `GO`: carry on.
 - `PARK`: what's left of Claude's 5-hour window, keeping 5% for the wait, won't cover the next step and won't finish the run. Park until the window resets.
-- `WEEKLY`: Claude's weekly quota runs out first, so waiting for the 5-hour reset won't help. If a Codex run is still going, end your turn and wait for it to finish (it uses Codex's quota, not Claude's). Then record its result without checking it, stop every server listed in progress.md, set `Now: 等周额度`, run `keep-awake.ps1 stop` and `notify.ps1 -Title "collab 暂停" -Message "Claude 周额度将尽，重置后运行 /collab continue"`, and end. The user runs `/collab continue` after the weekly reset.
+- `WEEKLY`: Claude's weekly quota runs out first, so waiting for the 5-hour reset won't help. If a Codex run is still going, end your turn and wait for it to finish (it uses Codex's quota, not Claude's). Then record its result without checking it, stop every server listed in progress.md, set `Now: 等周额度`, run `keep-awake stop` and `notify -Title "collab 暂停" -Message "Claude 周额度将尽，重置后运行 /collab continue"`, and end. The user runs `/collab continue` after the weekly reset.
 
 **To park:**
 1. Start nothing new. A Codex run that's still going keeps going.
@@ -233,8 +242,8 @@ The continue job ends the wait.
 ## Continue
 
 1. Read `.collab/progress.md`. If status is `escalated`, get the user's decision first. If it has a `Parked until:` line, delete those of its jobs that haven't fired yet (CronDelete; an unknown id is fine) and remove the line. A Codex run it notes as finished but not checked is checked first, in step 4.
-2. Run `keep-awake.ps1 start`. Stop any server still listed in progress.md (check its port first: the PID may have been reused) and clear the list.
-3. If the current Codex run has no `.exit` file, check whether it's alive with `codex-proc.ps1 list <name>` (no output means not alive).
+2. Run `keep-awake start`. Stop any server still listed in progress.md (check its port first: the PID may have been reused) and clear the list.
+3. If the current Codex run has no `.exit` file, check whether it's alive with `codex-proc list <name>` (no output means not alive).
    - **Alive:** start its sentinel again (10 minutes) and end your turn.
    - **Not alive:** write `dead` into `.collab/runs/<name>.exit`. Then, under a new name, resume its thread if the log has one; otherwise re-launch the run.
 4. Otherwise, carry on from the recorded status.
