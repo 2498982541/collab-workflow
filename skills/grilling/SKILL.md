@@ -25,22 +25,10 @@ For each question:
 - Set `multiSelect: false` for mutually exclusive choices; use `true` only when several answers can apply together.
 - The tool provides an Other/custom-response option automatically. Let the user use it for open-ended answers or corrections; do not add a duplicate Other option or treat a suggested answer as confirmed.
 
-If the tool is unavailable or its call fails, briefly explain that and list the remaining questions of this round in the conversation instead, using this format:
-
-```
-❓ **Q1** - **<question title>**: <question body, might be multiple paragraphs, including multiple choices>
-
-➡️ <your recommended answer>
-
----
-
-❓ **Q2** - **<question title>**: <question body, might be multiple paragraphs, including multiple choices>
-
-➡️ <your recommended answer>
-```
+If the tool is unavailable or its call fails, say so briefly and list the round's remaining questions in the conversation instead, each with its options and your recommended answer.
 
 Each round the user answers reshapes the tree: settled decisions push the frontier outward and unblock questions that depended on them. Recompute the frontier and ask the next round. A question whose answer depends on another question still open in this round belongs to a _later_ round, not this one.
 
-Finding _facts_ is your job, never the user's. When a frontier question needs a fact from the environment (filesystem, tools, etc.), dispatch a sub-agent to find it; don't ask the user for anything you could look up yourself. Don't block on it: a running exploration is an unsettled prerequisite, so only the questions downstream of it wait for the sub-agent to report; ask the rest of the frontier now. The _decisions_ are the user's: put each to them and wait.
+Finding _facts_ is your job, never the user's. When a frontier question needs a fact from the environment (filesystem, tools, etc.), look it up yourself before asking; don't ask the user for anything you could look up. Use a sub-agent only for a broad search, since it starts cold and has to re-read what you already know. Don't block on it: only the questions downstream of it wait for its report; ask the rest of the frontier now. The _decisions_ are the user's: put each to them and wait.
 
 The session is done when the frontier is empty: every branch of the design tree visited, nothing left silently assumed. Do not act on it until the user confirms you have reached a shared understanding.
