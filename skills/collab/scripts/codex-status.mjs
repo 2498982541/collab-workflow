@@ -1,9 +1,12 @@
-// Status helpers for /collab Codex runs (Node >= 18, no dependencies).
-//   node codex-status.mjs watch <root> <run> <minutes>  sentinel: prints DONE when the run ends, or SILENT once
-//                                                        neither Codex nor any of its sub-agents has done anything for <minutes>
+// Status helpers for /collab Codex and Pi runs (Node >= 18, no dependencies).
+//   node codex-status.mjs watch <root> <run>[,<run>...] <minutes>
+//                                                        sentinel: prints DONE once every run has ended, or SILENT once one of
+//                                                        them (Codex with all its sub-agents, or Pi) has done nothing for <minutes>
 //   node codex-status.mjs inspect <root> <run>           diagnosis bundle for a quiet run (events, sub-agents, processes)
-//   node codex-status.mjs quota <root>                   quota change per step, from .collab/runs/quota.log, and the
-//                                                        keep-alive turns while parked
+//   node codex-status.mjs quota <root>                   quota change per step, from .collab/runs/quota.log, Pi's spending
+//                                                        per step, and the keep-alive turns while parked
+//   node codex-status.mjs pi-last <log> <out>            for pi-run: writes Pi's final message (or why there is none) to
+//                                                        <out> and prints 0 if it ended normally, 1 if not
 //   node codex-status.mjs budget <root>                  whether Claude's quota covers the next step: GO, PARK or WEEKLY
 //   node codex-status.mjs park <root> <HH:MM|ISO|+min>   the CronCreate jobs for waiting until then (a Codex limit)
 //   node codex-status.mjs line                           Claude Code status line (session JSON on stdin)
@@ -93,10 +96,11 @@ function runInfo(root, run) {
 }
 
 const alive = pid => { try { process.kill(pid, 0); return true } catch (e) { return e.code === 'EPERM' } }
-const wrapperPid = (root, run) => Number(readSlice(path.join(runs(root), `${run}.job`), false, 200).match(/collab-codex-(\d+)/)?.[1] ?? 0)
+const wrapperPid = (root, run) => Number(readSlice(path.join(runs(root), `${run}.job`), false, 200).match(/collab-(?:codex|pi)-(\d+)/)?.[1] ?? 0)
+const isPi = (root, run) => readSlice(path.join(runs(root), `${run}.job`), false, 200).startsWith('collab-pi-')
 const finished = (root, run) => fs.existsSync(path.join(runs(root), `${run}.exit`))
 
-// The live run: its codex-run.ps1 is still alive and it hasn't written an exit code.
+// The live run: its codex-run or pi-run is still alive and it hasn't written an exit code.
 function currentRun(root) {
   let names = []
   try { names = fs.readdirSync(runs(root)) } catch {}
@@ -105,15 +109,26 @@ function currentRun(root) {
     .sort((a, b) => (stat(path.join(runs(root), `${b}.job`))?.mtimeMs ?? 0) - (stat(path.join(runs(root), `${a}.job`))?.mtimeMs ?? 0))[0]
 }
 
-async function watch(root, run, minutes) {
+// A Pi batch is watched with one sentinel: `watch <root> phase-2.pi-1,phase-2.pi-2 10`.
+async function watch(root, list, minutes) {
   const t0 = Date.now()
+  const names = list.split(',').filter(Boolean)
+  const gone = new Set()
   for (;;) {
-    if (finished(root, run)) { console.log(`DONE ${run}`); break }
-    const pid = wrapperPid(root, run)
-    if (pid && !alive(pid)) { console.log(`DONE ${run} (codex-run is gone without an exit code)`); break }
-    const last = Math.max(runInfo(root, run).last, t0)
-    if (Date.now() - last >= minutes * 60000) {
-      console.log(`SILENT ${run}: no activity from Codex or its sub-agents for ${Math.round((Date.now() - last) / 60000)} minutes (last at ${hhmm(last)})`)
+    for (const run of names) {
+      const pid = wrapperPid(root, run)
+      if (finished(root, run) || (pid && !alive(pid))) gone.add(run)
+    }
+    if (gone.size === names.length) {
+      const lost = names.filter(run => !finished(root, run))
+      console.log(`DONE ${list}${lost.length ? ` (${lost.join(', ')}: the launcher is gone without an exit code)` : ''}`)
+      break
+    }
+    const quiet = names.filter(run => !gone.has(run)).map(run => ({ run, last: Math.max(runInfo(root, run).last, t0) }))
+      .find(r => Date.now() - r.last >= minutes * 60000)
+    if (quiet) {
+      const who = isPi(root, quiet.run) ? 'Pi' : 'Codex or its sub-agents'
+      console.log(`SILENT ${quiet.run}: no activity from ${who} for ${Math.round((Date.now() - quiet.last) / 60000)} minutes (last at ${hhmm(quiet.last)})`)
       break
     }
     saveCache()
@@ -142,15 +157,40 @@ function describeRollout(e) {
   return null
 }
 
+// Pi's JSON events (pi-run). The streaming message_update records are left out by the callers.
+const piText = content => (Array.isArray(content) ? content.filter(c => c.type === 'text').map(c => c.text).join('\n') : String(content ?? ''))
+function describePi(e) {
+  if (e.type === 'tool_execution_start') return `START ${e.toolName}: ${clip(e.args?.command ?? e.args?.path ?? JSON.stringify(e.args), 200)}`
+  if (e.type === 'tool_execution_end') return `DONE  ${e.toolName}${e.isError ? ' (error)' : ''} => ${clip(piText(e.result?.content).slice(-300), 300)}`
+  if (e.type === 'message_end' && e.message?.role === 'assistant') {
+    const m = e.message
+    if (m.stopReason === 'toolUse' && !piText(m.content).trim()) return null  // only tool calls, shown by their own events
+    return `says${['stop', 'toolUse'].includes(m.stopReason) ? '' : ` (${m.stopReason}: ${clip(m.errorMessage, 150)})`}: ${clip(piText(m.content), 200)}`
+  }
+  if (/^(auto_retry|compaction)_/.test(e.type)) return `${e.type} ${clip(e.errorMessage ?? e.finalError ?? e.reason ?? '', 200)}`
+  if (e.type === 'agent_end' || e.type === 'agent_settled') return e.type
+  return null
+}
+
 function inspect(root, run) {
   const r = runInfo(root, run)
-  const events = lines(r.log, true)
-  console.log(`run ${run} | started ${ago(r.started)} ago | last activity ${ago(r.last)} ago | thread ${r.tid ?? '?'}`)
+  const pi = isPi(root, run)
+  const id = pi ? `Pi session ${lines(r.log, false, 4096).find(e => e.type === 'session')?.id ?? '?'}` : `Codex thread ${r.tid ?? '?'}`
+  console.log(`run ${run} | ${id} | started ${ago(r.started)} ago | last activity ${ago(r.last)} ago`)
   const open = new Map()
-  for (const e of events) if (e.item?.type === 'command_execution') e.type === 'item.started' ? open.set(e.item.id, e) : open.delete(e.item.id)
-  for (const e of open.values()) console.log(`STILL RUNNING: ${clip(e.item.command, 300)}`)
-  console.log('\nlast root events:')
-  for (const e of events.slice(-12)) console.log('  ' + describe(e))
+  if (pi) {
+    const events = lines(r.log, true, 1 << 21).filter(e => e.type !== 'message_update')
+    for (const e of events) e.type === 'tool_execution_start' ? open.set(e.toolCallId, e) : e.type === 'tool_execution_end' && open.delete(e.toolCallId)
+    for (const e of open.values()) console.log(`STILL RUNNING: ${e.toolName} ${clip(e.args?.command ?? JSON.stringify(e.args), 300)}`)
+    console.log('\nlast events:')
+    for (const line of events.map(describePi).filter(Boolean).slice(-12)) console.log('  ' + line)
+  } else {
+    const events = lines(r.log, true)
+    for (const e of events) if (e.item?.type === 'command_execution') e.type === 'item.started' ? open.set(e.item.id, e) : open.delete(e.item.id)
+    for (const e of open.values()) console.log(`STILL RUNNING: ${clip(e.item.command, 300)}`)
+    console.log('\nlast root events:')
+    for (const e of events.slice(-12)) console.log('  ' + describe(e))
+  }
   for (const s of r.files.filter(f => f.agent)) {
     console.log(`\nsub-agent ${s.agent} | ${s.type === 'task_complete' ? 'finished' : 'working'} | last activity ${ago(s.at)} ago`)
     for (const line of lines(s.file, true).map(describeRollout).filter(Boolean).slice(-6)) console.log('  ' + line)
@@ -186,6 +226,33 @@ function stepUsage(rows) {
   return steps
 }
 
+// Pi's spending per step, from the usage on its assistant messages. A run counts for the step its name starts with:
+// `phase-2.pi-1` for "phase 2", `review.pi` for "review".
+function piSpending(root) {
+  let names = []
+  try { names = fs.readdirSync(runs(root)).filter(n => n.endsWith('.job')).map(n => n.slice(0, -4)).filter(run => isPi(root, run)) } catch {}
+  const steps = new Map()
+  for (const run of names.sort()) {
+    const m = run.match(/^phase-(\d+)/)
+    const step = m ? `phase ${m[1]}` : run.split('.')[0]
+    const s = steps.get(step) ?? { runs: 0, tokens: 0, cost: 0 }
+    s.runs++
+    let text = ''
+    try { text = fs.readFileSync(path.join(runs(root), `${run}.jsonl`), 'utf8') } catch {}
+    for (const l of text.split('\n')) {
+      if (!l.startsWith('{"type":"message_end"')) continue
+      let u
+      try { u = JSON.parse(l).message } catch { continue }
+      u = u?.role === 'assistant' && u.usage
+      if (!u) continue
+      s.tokens += u.totalTokens ?? 0
+      s.cost += u.cost?.total ?? 0
+    }
+    steps.set(step, s)
+  }
+  return steps
+}
+
 function quotaTable(root) {
   const rows = quotaRows(root)
   if (!rows.length) console.log('no quota.log')
@@ -196,6 +263,14 @@ function quotaTable(root) {
     console.log('step | from - to | Claude 5h | Claude week | Codex 5h | Codex week   (percentage points used, across window resets)')
     for (const s of steps) row(s.step, s.from, s.to, s.used)
     row('total', rows[0][0], rows.at(-1)[0], [0, 1, 2, 3].map(c => steps.reduce((a, s) => (s.used[c] == null ? a : (a ?? 0) + s.used[c]), null)))
+  }
+  const pi = piSpending(root)
+  if (pi.size) {
+    const k = n => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1000)}k`)
+    console.log("Pi (DeepSeek V4.1 Flash through OpenCode Go): step | runs | tokens | cost at the model's list prices")
+    for (const [step, s] of pi) console.log(`${step} | ${s.runs} | ${k(s.tokens)} | $${s.cost.toFixed(2)}`)
+    const all = [...pi.values()]
+    console.log(`total | ${all.reduce((a, s) => a + s.runs, 0)} | ${k(all.reduce((a, s) => a + s.tokens, 0))} | $${all.reduce((a, s) => a + s.cost, 0).toFixed(2)}`)
   }
   const haiku = readSlice(path.join(runs(root), 'haiku.log'), false, 1 << 22).split('\n').filter(Boolean).map(l => l.split('\t'))
   if (haiku.length) {
@@ -440,8 +515,16 @@ function runState(root, run) {
     const end = buf.lastIndexOf(10) + 1  // whole lines only; a partial one is read next time
     s.offset += end
     for (const l of buf.toString('utf8', 0, end).split('\n')) {
+      if (l.startsWith('{"type":"message_update"')) continue  // Pi's streaming deltas
       let e
       try { e = JSON.parse(l) } catch { continue }
+      // Pi: its tool calls and progress lines; it never asks Haiku, so no recent events.
+      if (e.type === 'tool_execution_start') s.open[e.toolCallId] = { cmd: clip(e.args?.command ?? e.toolName, 150), at: Date.now() }
+      else if (e.type === 'tool_execution_end') delete s.open[e.toolCallId]
+      else if (e.type === 'message_end' && e.message?.role === 'assistant') {
+        const m = piText(e.message.content).match(STEP)
+        if (m) s.step = { k: Number(m[1]), n: Number(m[2]), text: clip(m[3], 40) }
+      }
       const it = e.item
       if (!it) continue
       if (it.type === 'command_execution') {
@@ -472,6 +555,15 @@ function haikuPrompt(root, run, s) {
     'Recent events, oldest first:', ...s.recent, ...open].filter(Boolean).join('\n')
 }
 
+// The Pi batch a run belongs to (`phase-2.pi-1`, `phase-2.pi-2`, ...): how many of its runs have finished, or null.
+function piBatch(root, run) {
+  const m = run.match(/^(.+)\.pi-\d+$/)
+  if (!m) return null
+  let names = []
+  try { names = fs.readdirSync(runs(root)).filter(n => n.startsWith(`${m[1]}.pi-`) && /\.pi-\d+\.job$/.test(n)).map(n => n.slice(0, -4)) } catch {}
+  return { done: names.filter(n => finished(root, n)).length, total: names.length }
+}
+
 // The status line's second row, the workflow's progress:
 //   ◆ 阶段2/3 写前端  ━━━━━━──── 58% · 3/7 正在跑单元测试 · 2子代理
 // `run` is the live Codex run, `s` its runState and `h` Haiku's side, when there is a run.
@@ -492,10 +584,11 @@ function collabRow({ root, status, progress }, run, s, h) {
     : /^plan/i.test(status) ? '规划' : isReview ? '代码审查' : isAccept ? '验收' : 'collab'
   // How far into the current step: Codex's progress lines while the phase's own run works;
   // a fix run, or Claude checking after the run, counts as nearly done.
+  // A phase given whole to a single Pi run is `phase-N.pi`, and counts like the phase's own run.
   let frac = 0
   if (isPhase) {
     const base = `phase-${done + 1}`
-    frac = run === base ? (s.step ? (s.step.k - 1) / s.step.n : 0) : fs.existsSync(path.join(runs(root), `${base}.exit`)) ? 0.9 : 0
+    frac = run === base || run === `${base}.pi` ? (s.step ? (s.step.k - 1) / s.step.n : 0) : fs.existsSync(path.join(runs(root), `${base}.exit`)) ? 0.9 : 0
   } else if (isReview || isAccept) frac = 0.5
   const doneMin = sum(phases.filter(p => p.done)) + (isAccept ? REVIEW_MIN : 0)
   const curMin = isPhase ? (phases.find(p => !p.done)?.min ?? 0) : isReview ? REVIEW_MIN : isAccept ? ACCEPT_MIN : 0
@@ -505,9 +598,11 @@ function collabRow({ root, status, progress }, run, s, h) {
 
   const row = [`${C.cyan}◆${C.reset} ${stage}${now && now !== stage ? ' ' + now : ''}  ${bar} ${C.bold}${pct}%${C.reset}`]
   if (run) {
+    const batch = piBatch(root, run)
+    if (batch) row.push(`Pi 铺量 ${batch.done}/${batch.total} 完成`)
     const activity = h.run === run && h.text && Date.now() - h.at < 180000 ? h.text : s.step?.text
     const step = s.step ? `${C.grey}${s.step.k}/${s.step.n}${C.reset}` : ''
-    if (step || activity) row.push([step, activity].filter(Boolean).join(' '))
+    if (!batch && (step || activity)) row.push([step, activity].filter(Boolean).join(' '))
     const r = runInfo(root, run)
     const agents = r.files.filter(f => f.agent && f.type !== 'task_complete' && Date.now() - f.at < 1800000).length
     if (agents) row.push(`${C.grey}${agents}子代理${C.reset}`)
@@ -562,7 +657,7 @@ function pluginPoll(sid) {
   if (transcript) cache.collabSessions[sid].path = transcript
   const act = collab && activeRun(process.cwd())
   const codex = act && !/^Parked until:/im.test(act.progress) && currentRun(act.root)  // no questions while parked: they cost Claude's quota
-  if (!codex) return { collab }
+  if (!codex || isPi(act.root, codex)) return { collab }  // Pi's progress is its batch count and its own step lines
   const s = readJson(statusFile(act.root))
   const h = readJson(haikuFile(act.root))
   if (s.run !== codex || !s.recent?.length) return { collab }
@@ -585,12 +680,28 @@ async function haikuNote() {
   fs.appendFileSync(path.join(runs(act.root), 'haiku.log'), row.join('\t') + '\n')
 }
 
+// For pi-run: Pi's final message into <out>, and 0 if it ended normally ("stop"), 1 if not. Pi's own exit code doesn't
+// say: a failed or aborted reply still exits 0. Without a final message, <out> gets the end of the log instead
+// (startup errors such as a missing key go to stderr, which pi-run puts in the same log).
+function piLast(log, out) {
+  const text = readSlice(log, true, 1 << 21)
+  const events = text.split('\n').filter(l => !l.startsWith('{"type":"message_update"')).map(l => { try { return JSON.parse(l) } catch { return null } })
+  const m = events.findLast(e => e?.type === 'message_end' && e.message?.role === 'assistant')?.message
+  let body, code = 1
+  if (!m) body = `Pi ended without a final message. The end of its log:\n\n${redact(text.split('\n').filter(l => !l.startsWith('{')).join('\n').trim().slice(-2000))}`
+  else if (m.stopReason === 'stop') { body = piText(m.content); code = 0 }
+  else body = `Pi stopped (${m.stopReason}): ${redact(m.errorMessage ?? '')}\n\n${piText(m.content)}`
+  fs.writeFileSync(out, body.trim() + '\n')
+  console.log(code)
+}
+
 const [cmd, ...args] = process.argv.slice(2)
 if (cmd === 'watch') await watch(args[0], args[1], Number(args[2] ?? 10))
 else if (cmd === 'inspect') inspect(args[0], args[1])
 else if (cmd === 'quota') quotaTable(args[0])
 else if (cmd === 'budget') budget(args[0] ?? '.')
 else if (cmd === 'park') park(args[0] ?? '.', args[1])
+else if (cmd === 'pi-last') piLast(args[0], args[1])
 else if (cmd === 'plugin') { console.log(JSON.stringify(pluginPoll(args[0]))); saveCache() }
 else if (cmd === 'haiku') await haikuNote()
 else if (cmd === 'line') {
@@ -600,4 +711,4 @@ else if (cmd === 'line') {
   try { session = JSON.parse(input) } catch {}
   try { process.stdout.write(statusLine(session)) } catch { process.stdout.write('') }
   saveCache()
-} else console.log('usage: codex-status.mjs watch|inspect|quota|budget|park|line|plugin ...')
+} else console.log('usage: codex-status.mjs watch|inspect|quota|budget|park|pi-last|line|plugin ...')

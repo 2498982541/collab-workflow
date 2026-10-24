@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Linux/WSL twin of codex-proc.ps1. Lists or stops every process of one Codex run (run from the project root):
+# Linux/WSL twin of codex-proc.ps1. Lists or stops every process of one Codex or Pi run (run from the project root):
 #   codex-proc.sh list <run> [seconds]  - prints the run's processes; no output means the run is not alive.
 #                                         With seconds > 0, cpu is the CPU time used during that sample.
-#   codex-proc.sh stop <run>            - kills them all and marks the run stopped (codex-run.sh dies too, which wakes Claude)
-# A run's processes live in the systemd scope named in .collab/runs/<run>.job (see codex-run.sh).
+#   codex-proc.sh stop <run>            - kills them all and marks the run stopped (its codex-run.sh or pi-run.sh dies too, which wakes Claude)
+# A run's processes live in the systemd scope named in .collab/runs/<run>.job (see codex-run.sh and pi-run.sh).
 set -u
 Mode=${1:-} Run=${2:-} Sample=${3:-0}
 case "$Mode" in list|stop) ;; *) echo "usage: codex-proc.sh list|stop <run> [seconds]" >&2; exit 2 ;; esac

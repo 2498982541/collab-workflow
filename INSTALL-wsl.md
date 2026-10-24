@@ -14,9 +14,10 @@ This is the install for WSL; INSTALL-windows.md is for Windows, and INSTALL-shar
 |---|---|
 | Claude Code (the conductor), inside WSL | runs the `collab` skill |
 | Codex CLI, inside WSL, logged in with ChatGPT | writes the code, using its own parallel sub-agents |
+| Pi 1.4.0, logged in to OpenCode Go | does large, patterned batch work on DeepSeek V4.1 Flash, when a plan has some |
 | systemd in WSL | `codex-run.sh` runs each Codex run in a systemd user scope, so everything the run started, dev servers included, is killed when it ends |
 | WSL interop | notifications and keep-awake run on the Windows side, through Windows PowerShell |
-| git with a commit identity, Node.js ≥ 18 | commits and the helper scripts |
+| git with a commit identity, Node.js ≥ 22.19 | commits and the helper scripts |
 | Playwright MCP with its own Chromium | Claude screenshots the UI |
 | GitHub CLI, logged in | syncing this repo between machines |
 | a status line | shows both quotas and context use, and records quota for the final report and for deciding when to park a run until Claude's quota resets |
@@ -45,13 +46,14 @@ Skills are linked into place with symlinks, not copied, so `git pull` in this re
 |---|---|---|
 | Claude Code ≥ 2.1.293 | `claude --version` | `curl -fsSL https://claude.ai/install.sh \| bash` (installs into `~/.local`). From 2.1.293, `haiku` is Claude Haiku 5.5. To upgrade an existing install: `claude update`. |
 | git + identity | `git --version`, `git config --global user.name`, `git config --global user.email` | ask the user to run `! sudo apt-get install -y git`; ask them for name and email, then set them |
-| Node.js ≥ 18 | `node --version` | without `sudo`: download the current LTS's `linux-x64.tar.xz` from nodejs.org, unpack it into `~/.local/opt/node`, and link its `bin/node`, `bin/npm` and `bin/npx` into `~/.local/bin`. Then `npm config set prefix ~/.local`, so `npm i -g` installs into `~/.local` without `sudo`. |
+| Node.js ≥ 22.19 (Pi needs it) | `node --version` | without `sudo`: download the current LTS's `linux-x64.tar.xz` from nodejs.org, unpack it into `~/.local/opt/node`, and link its `bin/node`, `bin/npm` and `bin/npx` into `~/.local/bin`. Then `npm config set prefix ~/.local`, so `npm i -g` installs into `~/.local` without `sudo`. |
 | GitHub CLI, logged in | `gh --version`, `gh auth status` | without `sudo`: download the `linux_amd64.tar.gz` of the latest release from github.com/cli/cli, and put its `bin/gh` into `~/.local/bin`. Then ask the user to run `! gh auth login`. If they use a proxy, they should set `HTTPS_PROXY` first. |
 | Codex CLI, latest | `codex --version`, `codex login status` | If it's installed, always run `codex update`: an old CLI can reject a newer model. If it's missing, `npm i -g @openai/codex@latest`. If not logged in, ask the user to run `! codex login --device-auth` (a code to enter in the Windows browser). |
+| Pi 1.4.0, pinned | `pi --version` | `npm i -g @earendil-works/pi-coding-agent@1.4.0`, never `@latest` (see "Pi configuration" in INSTALL-shared.md). The key is set up in section 3. |
 
-## 3. Codex configuration
+## 3. Codex and Pi configuration
 
-Do "Codex configuration" in INSTALL-shared.md. The file is `~/.codex/config.toml`.
+Do "Codex configuration" and "Pi configuration" in INSTALL-shared.md. Codex's file is `~/.codex/config.toml`, and Pi's is `~/.pi/agent/settings.json`.
 
 ## 4. Claude Code settings
 
@@ -105,6 +107,12 @@ Let `S=<repo>/skills/collab/scripts`.
    - Write `.collab/runs/c.prompt.md` asking Codex to start `node -e "require('http').createServer((q,r)=>r.end('hi')).listen(3111)"` in the background with `setsid nohup ... > /dev/null 2>&1 &`, check it answers, leave it running, and reply `DONE`.
    - Run it with `-Name c` the same way.
    - Afterwards, `node "$S/free-port.mjs" 3111` must print `3111`, meaning the leftover server was killed with the run's systemd scope.
+6. **A real Pi run through the workflow's launcher**, once the key is set up (section 3). In the same scratch repo:
+   ```bash
+   echo "Reply with exactly: OK" > .collab/runs/p.prompt.md
+   bash "$S/pi-run.sh" -Name p -Effort medium; cat .collab/runs/p.last.md
+   ```
+   It must print `pi run 'p' finished (exit 0)` and then `OK`. On exit 1, `.collab/runs/p.last.md` says why.
 
 ## 8. Report
 

@@ -1,6 +1,6 @@
 ---
 name: collab
-description: Large-project workflow - Claude aligns requirements, plans, and builds the visual skeleton; Codex CLI implements phase by phase (with its own parallel sub-agents); Claude accepts against the requirements. Manual trigger only.
+description: Large-project workflow - Claude aligns requirements, plans, and builds the visual skeleton; Codex CLI implements phase by phase (with its own parallel sub-agents), and Pi on DeepSeek takes large patterned batch work when there is some; Claude accepts against the requirements. Manual trigger only.
 disable-model-invocation: true
 argument-hint: "[continue]"
 ---
@@ -8,6 +8,8 @@ argument-hint: "[continue]"
 # collab
 
 You are the conductor. Codex CLI is your implementation subagent. You own requirements, architecture, the frontend look, and final acceptance; Codex owns writing the code and its code quality. Don't do Codex's job, and don't re-implement what Claude Code and Codex already do well — just route work between them.
+
+For large, patterned batch work, and only that, you also have Pi: a small coding agent running DeepSeek V4.1 Flash on the user's OpenCode Go subscription, whose quota is plentiful. See "Pi for batch work". Most runs never use it.
 
 Talk to the user in Chinese. Everything else (files, prompts, commit messages) is in English, except `.collab/report.md` and the `Now:` line in progress.md, which are Chinese.
 
@@ -25,11 +27,11 @@ This skill runs on Windows (Claude Code's Bash tool is Git Bash) or inside WSL; 
 | start a server | Bash with `run_in_background: true`; its PID is the last column of `netstat -ano \| grep LISTENING \| grep ":<port> "` | `setsid nohup <command> > <log> 2>&1 &` (so it doesn't hold the Bash tool); its PID is `$!` |
 | stop a server | `taskkill //PID <pid> //T //F` | `kill <pid>`, then `kill -9 <pid>` if it's still there a few seconds later |
 
-`codex-run` ends a run by killing everything the run started: through a Windows job object, or in WSL through a systemd user scope. In WSL, `notify` and `keep-awake` reach Windows through WSL interop.
+`codex-run` and `pi-run` end a run by killing everything the run started: through a Windows job object, or in WSL through a systemd user scope. In WSL, `notify` and `keep-awake` reach Windows through WSL interop. Pi's version is pinned by the install, on both platforms: never update it during a run.
 
 ## Saving tokens
 
-- During execution, read Codex's final message, not its diffs or source files. When a check fails, give Codex the symptom and evidence (command output, a screenshot path) and let it diagnose.
+- During execution, read Codex's or Pi's final message, not its diffs or source files. When a check fails, give Codex the symptom and evidence (command output, a screenshot path) and let it diagnose.
 - After launching background work, end your turn with one status line. Don't poll and don't sleep — Claude Code wakes you when a background command exits.
 
 ## Files (project root)
@@ -40,7 +42,7 @@ This skill runs on Windows (Claude Code's Bash tool is Git Bash) or inside WSL; 
 .collab/report.md      final report (Chinese)
 .collab/progress.md    run state - the source of truth for continuing (not committed)
 .collab/.gitignore     contains: runs/  screenshots/  progress.md
-.collab/runs/          Codex prompts, logs, final messages; quota.log and transcript.txt (written by the status line: quota over time, and where this session's transcript is); status.json and haiku.log (the status bar's view of the live run, and what Haiku's summaries of it cost)
+.collab/runs/          Codex and Pi prompts, logs, final messages; pi-sessions/ (Pi's sessions); quota.log and transcript.txt (written by the status line: quota over time, and where this session's transcript is); status.json and haiku.log (the status bar's view of the live run, and what Haiku's summaries of it cost)
 .collab/screenshots/   acceptance evidence
 ```
 
@@ -117,6 +119,7 @@ Write plan.md:
   - `minutes: N`, your estimate of the Codex run's length;
   - `ui: yes|no`;
   - `parallel: N` (1–5). Codex is slow, so split work that is truly independent across sub-agents. For N > 1, list the subtasks and the files each one owns. No two subtasks may touch the same file; shared contracts come first, or go to the integration step after the sub-agents finish.
+  - `agent: codex` (the default) or `agent: pi`, and `pi batch:` when part of a Codex phase goes to Pi; see "Pi for batch work". With `agent: pi`, `parallel` splits the phase across Pi runs the same way.
 
 If the project has a UI, write the visual skeleton yourself in code:
 - design tokens (colors, spacing, type, radii, shadows);
@@ -164,34 +167,63 @@ When woken by the run finishing, check Claude's quota first (see "Usage limits")
 On `DONE <name>` from the sentinel: if you haven't handled that run's finish yet, handle it now (read `<name>.last.md` and `.exit`); otherwise do nothing. Exits of runs you stopped yourself need nothing either.
 
 When woken by `SILENT`, don't investigate yourself:
-1. Spawn a subagent with `model: haiku`, telling it: "Run `node "<skill dir>/scripts/codex-status.mjs" inspect "<project root>" <name>` and judge whether this Codex run is healthy or stuck. Healthy means a long build or test is still using CPU, or sub-agents are still working. Stuck means something like waiting on a foreground server or an interactive prompt, or a process that is dead or idle. Reply with one line: `HEALTHY: <why>` or `STUCK: <why>`."
+1. Spawn a subagent with `model: haiku`, telling it: "Run `node "<skill dir>/scripts/codex-status.mjs" inspect "<project root>" <name>` and judge whether this coding-agent run is healthy or stuck. Healthy means a long build or test is still using CPU, or sub-agents are still working. Stuck means something like waiting on a foreground server or an interactive prompt, or a process that is dead or idle. Reply with one line: `HEALTHY: <why>` or `STUCK: <why>`."
 2. Act on its answer:
-   - **HEALTHY:** start the sentinel again. If the SILENT line's "last at" time is later than when you started that sentinel, the run did something in between, so use 10 minutes. Otherwise double the previous minutes (10 → 20 → 40). After 3 HEALTHY verdicts in a row with no activity in between, treat it as STUCK.
-   - **STUCK:** run `codex-proc stop <name>`, then resume the thread under a new name, with a note on what the inspector found. This counts as a fix round.
+   - **HEALTHY:** start the sentinel again (for a Pi batch, on the runs still going). If the SILENT line's "last at" time is later than when you started that sentinel, the run did something in between, so use 10 minutes. Otherwise double the previous minutes (10 → 20 → 40). After 3 HEALTHY verdicts in a row with no activity in between, treat it as STUCK.
+   - **STUCK:** run `codex-proc stop <name>`. A Codex run: resume the thread under a new name, with a note on what the inspector found; this counts as a fix round. A Pi run: its work goes to Codex (see "Pi for batch work").
 
 Servers you start yourself (skeleton renders, UI checks, acceptance) outlive TaskStop and the user closing this window, so keep track of them:
 - Pick the port with `free-port.mjs <preferred port>`. It prints the first port from there that can really be bound. Start the app on that port (`PORT=...` or the framework's port flag).
 - Start and stop servers as the Platform table shows. Record each one's port and PID in progress.md while it runs, and remove it once stopped.
 - Never kill a process that isn't listed in progress.md, even if it holds a port you want. It may be one of the user's programs; under WSL mirrored networking it may even be a Windows program that `ss` can't see.
 
+## Pi for batch work
+
+Pi takes large, patterned batch work and nothing else; Codex does all the rest.
+
+**What counts.** You decide while writing plan.md. Batch work is many pieces of the same shape that follow one template, don't depend on each other, and are easy to check: many similar endpoints, pages or components; a migration or rename across many files; bulk tests or fixtures; i18n strings. Architecture, tricky logic, state, the first instance of a pattern, and anything that needs judgment stay with Codex. Most runs have no such work and never start Pi. Log what you gave Pi, and why, under "Decisions made without asking".
+
+**Two shapes in plan.md:**
+- **A batch inside a Codex phase** (`pi batch:` on the phase: the template Codex writes first, then up to 5 subtasks, each with the files it owns). The phase runs in three steps:
+  1. Codex, `phase-N`: the template, the contracts and the phase's other work, committed. Its `{{NOTES}}` name the files it must leave to the batch.
+  2. The batch: one Pi run per subtask, `phase-N.pi-1` … `phase-N.pi-K`, all at once.
+  3. Codex again, resuming the phase's thread as `phase-N.join`, with "Your task: Integrate the batch for phase N", the batch's files, and the subtasks that didn't finish (with their `.last.md`). It finishes those itself, then builds, tests and commits.
+- **A whole phase on Pi** (`agent: pi`), only when the entire phase is batch work. With `parallel: 1`, one run, `phase-N.pi`, does all of it and commits. With `parallel: K`, the subtasks run as `phase-N.pi-1` … `phase-N.pi-K`, then one more Pi run, `phase-N.pi-join`, integrates, builds, tests and commits.
+
+**Running Pi.** Fill `pi-task.md` into `.collab/runs/<name>.prompt.md`. Keep the paragraph that starts with `Batch:` for a subtask (its task names the template and lists the files it owns), or the one that starts with `Whole task:` for a run that does a whole phase or the integration, and delete the other. Keep the `UI:` paragraph only when the task touches the UI. Then start, each with Bash `run_in_background: true`:
+- one `pi-run -Name <name> -Effort <medium|high>` per run, with the phase's effort;
+- one sentinel for all of them: `node "<skill dir>/scripts/codex-status.mjs" watch "<project root>" <name>[,<name>...] 10`.
+
+At most 5 Pi runs at once. Record them in progress.md (`Run: phase-2.pi-1..4 (Pi, effort medium, sentinel 10m)`) and end your turn. Each run's end wakes you; until the last one is done, end your turn with one status line. The sentinel prints `DONE <names>` once all have ended.
+
+`pi-run` writes the same files as `codex-run`. `<name>.exit` is `0` if Pi's final message ended normally and `1` if not, and `<name>.last.md` then says why (an error from OpenCode Go, or the end of the log). Pi runs are never resumed.
+
+**When Pi fails, Codex takes over at once.** Pi gets no second try:
+- A Pi run that exits `1` or is stuck. In a Codex phase, its subtask goes to the join step. In a phase on Pi, let the other Pi runs finish, then give what's left of the phase to a fresh Codex run, `phase-N.codex`, from codex-task.md with "Finish phase N of plan.md: <title>"; its `{{NOTES}}` say what Pi did and didn't finish, with the evidence.
+- A phase on Pi that fails its phase check: the fix rounds are Codex's, as a fresh thread (`phase-N.fix-1`, then resumed). After 2 rounds, escalate as usual.
+- OpenCode Go's usage limit (`.last.md` says so): the same as a failure, and give Pi nothing more in this run. Never park for it.
+
+Codex's own limits work as before: when Codex is out, the run waits for it (see "Usage limits"), and Pi doesn't take over its work. The one exception is the review in Step 4.
+
 ## Step 3 - Phases
 
 For each phase in plan.md:
 
-1. Set `Now:`, then run Codex with task "Implement phase N of plan.md: <title>", that phase's effort, and `-Parallel` from the plan.
+1. Set `Now:`, then run the phase the way plan.md says. Usually that's Codex with task "Implement phase N of plan.md: <title>", that phase's effort, and `-Parallel` from the plan; a phase with `pi batch:` or `agent: pi` runs as "Pi for batch work" says.
 2. When it finishes, check it:
    - read the final message and `git log --oneline` for the phase;
    - run the build and the tests with plan.md's commands, keeping only the end of the output: `<command> > .collab/runs/check.log 2>&1; echo "exit $?"; tail -20 .collab/runs/check.log`;
    - for `ui: yes` phases, start the app, screenshot the new screens with Playwright, compare them with the skeleton and spec, then stop the app.
-3. If something is wrong, resume the phase's thread with a short fix list and its evidence (the failing output, screenshot paths). Each resume is one fix round. After 2 rounds, if the phase is still wrong, escalate.
+3. If something is wrong, resume the phase's Codex thread with a short fix list and its evidence (the failing output, screenshot paths); after a phase on Pi, start a fresh Codex thread instead. Each fix run is one fix round. After 2 rounds, if the phase is still wrong, escalate.
 4. Mark the phase done in progress.md.
 
 ## Step 4 - Code review (Codex, once, review only)
 
 1. Fill `codex-review.md` (`{{BASE}}` = the base commit) into `.collab/runs/review.prompt.md`.
 2. Commit anything uncommitted, then launch it the usual way, with `-Name review -Effort high`. It runs with full access like every other run: Codex's read-only sandbox needs a Windows sandbox setup that can fail and leave Codex's own setup unfinished. The prompt tells Codex not to modify files.
+   If Codex is out of quota (the review run hits its limit, or an earlier run did and it hasn't reset), don't wait: run the review on Pi instead, from the same prompt saved as `review.pi.prompt.md`, with `pi-run -Name review.pi -Effort high` and its sentinel. The fix run below is still Codex's, and waits for it as usual.
 3. If `git status --porcelain` then shows changes anyway, run `git stash push -u -m "collab: edits made during review"` and log it under "Decisions made without asking".
-4. If the result isn't `NO_ISSUES`, make one fresh write run with task "Fix the issues listed in .collab/runs/review.last.md, P1 first" and effort `medium`.
+4. If the result isn't `NO_ISSUES`, make one fresh Codex write run with task "Fix the issues listed in .collab/runs/review.last.md, P1 first" (or `review.pi.last.md`) and effort `medium`.
 
 Don't judge the findings yourself — code quality is Codex's call.
 
@@ -212,7 +244,7 @@ Write `.collab/report.md` in Chinese:
 3. How to run the project.
 4. Known remaining issues.
 5. Branch name and a commit summary, plus a reminder that the user merges it themselves.
-6. Quota used per step, as a table: run `codex-status.mjs quota "<project root>"` and translate it, including its lines on Haiku's status summaries and, if the run was parked, on each turn while parked (whether it found the context still in the cache).
+6. Quota used per step, as a table: run `codex-status.mjs quota "<project root>"` and translate it, including its lines on Haiku's status summaries and, if the run was parked, on each turn while parked (whether it found the context still in the cache). If Pi ran, add a Pi column with its tokens and cost per step, from the same output.
 
 Then wrap up. The user may close this window the moment the notification appears, so everything must be finished before it, and nothing may matter only in chat:
 1. Set the status to `done`, then commit everything that remains (progress.md itself is not committed).
@@ -252,7 +284,8 @@ Which limit, and what to do:
   - `GO`: carry on.
   - `PARK`: what's left of the 5-hour window, keeping 5% for the wait, won't cover the next step and won't finish the run. Park with the jobs it printed.
   - `WEEKLY`: Claude's weekly quota runs out first, so waiting for the 5-hour reset won't help. If a Codex run is still going, end your turn and wait for it to finish (it uses Codex's quota, not Claude's). Then record its result without checking it, set `Now: 等周额度`, stand down with `-Title "collab 暂停" -Message "Claude 周额度将尽，重置后运行 /collab continue"`, and end. The user runs `/collab continue` after the weekly reset.
-- **A Codex limit** (the log or final message says so): run `codex-status.mjs park "<project root>" <reset>` with the reset time Codex states, as `HH:MM`, or `+60` if it gives none. Park with the jobs it printed.
+- **A Codex limit** (the log or final message says so), except for the review (Step 4): run `codex-status.mjs park "<project root>" <reset>` with the reset time Codex states, as `HH:MM`, or `+60` if it gives none. Park with the jobs it printed.
+- **OpenCode Go's limit** (a Pi run): never park; Codex takes over, as "Pi for batch work" says.
 - **Claude's 5-hour limit reached anyway** (a step cost more than expected): Claude Code continues automatically after the reset. Nothing to do.
 - **A closed window:** the user runs `/collab continue`.
 
@@ -274,7 +307,7 @@ The continue job ends the wait.
 
 1. Read `.collab/progress.md`. If status is `escalated`, get the user's decision first. If it has a `Parked until:` line, delete those of its jobs that haven't fired yet (CronDelete; an unknown id is fine) and remove the line. A Codex run it notes as finished but not checked is checked first, in step 4.
 2. Run `keep-awake start`. Stop any server still listed in progress.md (check its port first: the PID may have been reused) and clear the list.
-3. If the current Codex run has no `.exit` file, check whether it's alive with `codex-proc list <name>` (no output means not alive).
+3. If the current run (Codex, or each run of a Pi batch) has no `.exit` file, check whether it's alive with `codex-proc list <name>` (no output means not alive).
    - **Alive:** start its sentinel again (10 minutes) and end your turn.
-   - **Not alive:** write `dead` into `.collab/runs/<name>.exit`. Then, under a new name, resume its thread if the log has one; otherwise re-launch the run.
+   - **Not alive:** write `dead` into `.collab/runs/<name>.exit`. Then, under a new name, resume its thread if the log has one; otherwise re-launch the run (a Pi run cut off this way is re-launched, not given to Codex: it didn't fail).
 4. Otherwise, carry on from the recorded status.

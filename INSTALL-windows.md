@@ -14,8 +14,9 @@ This is the install for Windows; INSTALL-wsl.md is for WSL, and INSTALL-shared.m
 |---|---|
 | Claude Code (the conductor) | runs the `collab` skill |
 | Codex CLI, logged in with ChatGPT | writes the code, using its own parallel sub-agents |
+| Pi 1.4.0, logged in to OpenCode Go | does large, patterned batch work on DeepSeek V4.1 Flash, when a plan has some |
 | PowerShell 7 **from the MSI installer, not the Microsoft Store** | Codex runs its commands in `pwsh`. Store/MSIX `pwsh` escapes the job object that `codex-run.ps1` uses to clean up leftover processes, such as dev servers. |
-| git with a commit identity, Node.js ≥ 18, Microsoft Edge | commits, the helper scripts, and Playwright screenshots |
+| git with a commit identity, Node.js ≥ 22.19, Microsoft Edge | commits, the helper scripts, and Playwright screenshots |
 | Playwright MCP | Claude screenshots the UI |
 | GitHub CLI, logged in | syncing this repo between machines |
 | a status line | shows both quotas and context use, and records quota for the final report and for deciding when to park a run until Claude's quota resets |
@@ -31,10 +32,11 @@ Skills are linked into place with junctions, not copied, so `git pull` in this r
 |---|---|---|
 | Claude Code ≥ 2.1.293 | `claude --version` | `npm i -g @anthropic-ai/claude-code@latest` (the user wants the latest). From 2.1.293, `haiku` is Claude Haiku 5.5. Upgrading the running session's own binary works: npm leaves the old one in a `node_modules/@anthropic-ai/.claude-code-*` folder, which can be deleted once that session has exited. |
 | git + identity | `git --version`, `git config --global user.name`, `git config --global user.email` | `winget install --id Git.Git`; ask the user for name and email, then set them |
-| Node.js ≥ 18 | `node --version` | `winget install --id OpenJS.NodeJS.LTS` |
+| Node.js ≥ 22.19 (Pi needs it) | `node --version` | `winget install --id OpenJS.NodeJS.LTS`; if an older version is installed, `winget upgrade --id OpenJS.NodeJS.LTS` |
 | Microsoft Edge | ships with Windows 11 | `winget install --id Microsoft.Edge` |
 | GitHub CLI, logged in | `gh --version`, `gh auth status` | `winget install --id GitHub.cli`, then ask the user to run `gh auth login` in a new terminal. Browser login can't be automated. If they use a proxy, they should set `$env:HTTPS_PROXY` first. |
 | Codex CLI, latest | `codex --version`, `codex login status` | Always run `npm i -g @openai/codex@latest`, even if it's installed: an old CLI can reject a newer model. If not logged in, ask the user to run `codex login` (ChatGPT account). |
+| Pi 1.4.0, pinned | `pi --version` | `npm i -g @earendil-works/pi-coding-agent@1.4.0`, never `@latest` (see "Pi configuration" in INSTALL-shared.md). The key is set up in section 3. |
 
 ### PowerShell 7 (MSI)
 
@@ -55,9 +57,9 @@ powershell -NoProfile -Command "\$p = Start-Process msiexec.exe -ArgumentList '/
 
 The installer adds `C:\Program Files\PowerShell\7\` to the machine PATH, which comes before the user PATH (where the Store alias lives). Codex will therefore pick the MSI `pwsh`, but only once Claude Code is started from a new terminal window (see section 8). A Store `pwsh` can stay installed.
 
-## 3. Codex configuration
+## 3. Codex and Pi configuration
 
-Do "Codex configuration" in INSTALL-shared.md. The file is `%USERPROFILE%\.codex\config.toml`.
+Do "Codex configuration" and "Pi configuration" in INSTALL-shared.md. Codex's file is `%USERPROFILE%\.codex\config.toml`, and Pi's is `%USERPROFILE%\.pi\agent\settings.json`.
 
 ## 4. Claude Code settings
 
@@ -109,6 +111,12 @@ Let `S=<repo>/skills/collab/scripts`, using forward slashes.
    - Write `.collab/runs/c.prompt.md` asking Codex to start `node -e "require('http').createServer((q,r)=>r.end('hi')).listen(3111)"` in the background with `Start-Process`, check it answers, leave it running, and reply `DONE`.
    - Run it with `-Name c` the same way.
    - Afterwards, `netstat -ano | grep LISTENING | grep ":3111 "` must print nothing, meaning the leftover server was killed.
+6. **A real Pi run through the workflow's launcher**, once the key is set up (section 3). In the same scratch repo:
+   ```bash
+   echo "Reply with exactly: OK" > .collab/runs/p.prompt.md
+   powershell -NoProfile -ExecutionPolicy Bypass -File "$S/pi-run.ps1" -Name p -Effort medium; cat .collab/runs/p.last.md
+   ```
+   It must print `pi run 'p' finished (exit 0)` and then `OK`. On exit 1, `.collab/runs/p.last.md` says why.
 
 ## 8. Report
 

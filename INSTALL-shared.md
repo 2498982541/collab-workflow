@@ -18,6 +18,15 @@ Edit only the keys below and keep everything else the user has.
   - Sub-agents share the parent's prompt-cache key, so after the first one they mostly hit the cache.
   - They work in the same folder, so plan.md gives each one its own files.
 
+## Pi configuration
+
+Pi is a small coding agent. `/collab` gives it large, patterned batch work, on DeepSeek V4.1 Flash from the user's OpenCode Go subscription. Codex does everything else, and a run without such work never starts Pi.
+
+- **Pinned version:** `@earendil-works/pi-coding-agent@1.4.0`. Pi ships changes almost daily, so the user chose to stay on one tested version. `pi --version` must print `1.4.0`; if it doesn't, run `npm i -g @earendil-works/pi-coding-agent@1.4.0`. Never install `@latest` or update Pi on your own. To upgrade, the user changes the version in this file and in the platform files' tool tables, then reruns the Pi smoke test. npm may warn that it skipped the install scripts of `@google/genai` and `protobufjs`. Pi doesn't need them, so don't allow them.
+- **Key:** an OpenCode Go API key, from https://opencode.ai/auth in the workspace that has the Go subscription. Pi stores it in `~/.pi/agent/auth.json`. Never ask for the key in chat. Instead, ask the user to open `pi` in a terminal, type `/login`, choose OpenCode Go with an API key, paste the key, and quit with `/quit`. To check: `pi --list-models opencode-go` must list `deepseek-v4.1-flash`; without a key it prints "No models available".
+- **Settings** (`~/.pi/agent/settings.json`; merge them in, and don't overwrite other keys): `"enableInstallTelemetry": false`. This is the user's choice. Pi only reports installs from its interactive mode anyway. `pi-run` turns the same switch back on for its own runs, because it also controls the `x-opencode-client: pi` header that tells Go which client is calling.
+- Pi has no permission prompts: it runs every command it chooses, with the user's rights, like Codex with full access. On Windows its `bash` tool uses Git Bash.
+
 ## Claude Code settings (`~/.claude/settings.json`)
 
 Merge these in, and don't overwrite other keys. The user chose global bypass because `/collab` must run unattended.

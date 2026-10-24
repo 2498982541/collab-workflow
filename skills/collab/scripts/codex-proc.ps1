@@ -1,8 +1,8 @@
-# Lists or stops every process of one Codex run (run from the project root):
+# Lists or stops every process of one Codex or Pi run (run from the project root):
 #   codex-proc.ps1 list <run> [seconds]  - prints the run's processes; no output means the run is not alive.
 #                                          With seconds > 0, cpu is the CPU time used during that sample.
-#   codex-proc.ps1 stop <run>            - kills them all and marks the run stopped (codex-run.ps1 dies too, which wakes Claude)
-# A run's processes live in the job object named in .collab/runs/<run>.job (see codex-run.ps1).
+#   codex-proc.ps1 stop <run>            - kills them all and marks the run stopped (its codex-run.ps1 or pi-run.ps1 dies too, which wakes Claude)
+# A run's processes live in the job object named in .collab/runs/<run>.job (see codex-run.ps1 and pi-run.ps1).
 param(
   [Parameter(Mandatory)][ValidateSet('list', 'stop')][string]$Mode,
   [Parameter(Mandatory)][string]$Run,
