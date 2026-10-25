@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
 # Linux/WSL twin of pi-run.ps1, same arguments (run it from the project root):
-#   pi-run.sh -Name phase-2.pi-1 -Effort medium
+#   pi-run.sh -Name phase-2.pi-1 -Effort medium [-Commit]
 # Runs one Pi task on DeepSeek V4.1 Flash through OpenCode Go, the way codex-run.sh runs Codex:
 # reads .collab/runs/<Name>.prompt.md; writes <Name>.jsonl (events), <Name>.last.md (final message),
 # <Name>.job (systemd scope name, used by codex-proc.sh) and <Name>.exit (exit code, written last).
 # Every Pi run is a fresh session, kept in .collab/runs/pi-sessions; its id is in the first line of <Name>.jsonl.
 # Pi exits by itself once its work has settled; the run ends anyway 30 s after that.
 # Exit code 0 when Pi's final message ended normally, 1 otherwise (an error such as a usage limit, or no final message).
+# pi-git-guard.ts lets Pi only read with git; -Commit (a run that does a whole phase or the integration) also lets it commit.
 set -u
-Name='' Effort=''
+Name='' Effort='' git=read
 while [ $# -gt 0 ]; do
   case "$1" in
-    -Name) Name=$2 ;; -Effort) Effort=$2 ;;
+    -Name) Name=$2; shift ;; -Effort) Effort=$2; shift ;; -Commit) git=commit ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
-  shift 2
+  shift
 done
 [ -n "$Name" ] || { echo "missing -Name" >&2; exit 2; }
 case "$Effort" in medium|high) ;; *) echo "-Effort must be medium or high" >&2; exit 2 ;; esac
@@ -35,9 +36,9 @@ trap 'exit 143' TERM INT HUP
 
 # PI_TELEMETRY=1 keeps the x-opencode-client header that tells Go the client is Pi; JSON mode sends no install telemetry.
 # The prompt file comes in on stdin, which Pi puts before the one-line message.
-PI_TELEMETRY=1 PI_SKIP_VERSION_CHECK=1 systemd-run --user --scope --quiet --collect --unit="$unit" -- \
+PI_TELEMETRY=1 PI_SKIP_VERSION_CHECK=1 COLLAB_PI_GIT=$git systemd-run --user --scope --quiet --collect --unit="$unit" -- \
   pi --mode json --model opencode-go/deepseek-v4.1-flash --thinking "$Effort" --session-dir "$runs/pi-sessions" \
-  "Do the task above." < "$prompt" > "$log" 2>&1 &
+  -e "$here/pi-git-guard.ts" "Do the task above." < "$prompt" > "$log" 2>&1 &
 pi=$!
 
 settled() { tail -c 65536 "$log" 2>/dev/null | grep -q '"type":"agent_settled"'; }

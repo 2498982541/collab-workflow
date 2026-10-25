@@ -51,7 +51,7 @@
 ## 目录
 
 ```
-skills/collab/      主流程（SKILL.md）、给 Codex 的任务和审查模板、给 Pi 的任务模板、脚本（Codex 和 Pi 的启动与清理、哨兵和状态栏、防休眠、通知、找空闲端口；.ps1 给 Windows，同名 .sh 给 WSL），以及让 Haiku 总结 Codex 进展的小插件（自动加载）
+skills/collab/      主流程（SKILL.md）、给 Codex 的任务和审查模板、给 Pi 的任务模板、脚本（Codex 和 Pi 的启动与清理、Pi 的 git 拦截、哨兵和状态栏、防休眠、通知、找空闲端口；.ps1 给 Windows，同名 .sh 给 WSL），以及让 Haiku 总结 Codex 进展的小插件（自动加载）
 skills/grilling/    需求对齐，改自 mattpocock/skills（MIT 许可），改成用中文、通过提问工具来问；安装时会替换本机已有的上游版本
 INSTALL-*.md        给新电脑上的 AI 看的安装说明：windows、wsl 各一份，两边共用的部分在 shared
 CLAUDE.md           在这个仓库里改工作流时给 Claude 看的规则

@@ -109,10 +109,10 @@ Let `S=<repo>/skills/collab/scripts`.
    - Afterwards, `node "$S/free-port.mjs" 3111` must print `3111`, meaning the leftover server was killed with the run's systemd scope.
 6. **A real Pi run through the workflow's launcher**, once the key is set up (section 3). In the same scratch repo:
    ```bash
-   echo "Reply with exactly: OK" > .collab/runs/p.prompt.md
+   echo 'Run `git stash` with your bash tool. If it was blocked, reply with exactly: OK. If it ran, reply with exactly: RAN' > .collab/runs/p.prompt.md
    bash "$S/pi-run.sh" -Name p -Effort medium; cat .collab/runs/p.last.md
    ```
-   It must print `pi run 'p' finished (exit 0)` and then `OK`. On exit 1, `.collab/runs/p.last.md` says why.
+   It must print `pi run 'p' finished (exit 0)` and then `OK`, which also shows the run's git guard works. On exit 1, `.collab/runs/p.last.md` says why.
 
 ## 8. Report
 

@@ -191,7 +191,7 @@ Pi takes large, patterned batch work and nothing else; Codex does all the rest.
 - **A whole phase on Pi** (`agent: pi`), only when the entire phase is batch work. With `parallel: 1`, one run, `phase-N.pi`, does all of it and commits. With `parallel: K`, the subtasks run as `phase-N.pi-1` … `phase-N.pi-K`, then one more Pi run, `phase-N.pi-join`, integrates, builds, tests and commits.
 
 **Running Pi.** Fill `pi-task.md` into `.collab/runs/<name>.prompt.md`. Keep the paragraph that starts with `Batch:` for a subtask (its task names the template and lists the files it owns), or the one that starts with `Whole task:` for a run that does a whole phase or the integration, and delete the other. Keep the `UI:` paragraph only when the task touches the UI. Then start, each with Bash `run_in_background: true`:
-- one `pi-run -Name <name> -Effort <medium|high>` per run, with the phase's effort;
+- one `pi-run -Name <name> -Effort <medium|high>` per run, with the phase's effort, plus `-Commit` for a run with the `Whole task:` paragraph. `pi-run` loads a guard that lets Pi only read with git, so parallel runs can't wipe each other's work; `-Commit` also allows add, rm, mv and commit, but not amending;
 - one sentinel for all of them: `node "<skill dir>/scripts/codex-status.mjs" watch "<project root>" <name>[,<name>...] 10`.
 
 At most 5 Pi runs at once. Record them in progress.md (`Run: phase-2.pi-1..4 (Pi, effort medium, sentinel 10m)`) and end your turn. Each run's end wakes you; until the last one is done, end your turn with one status line. The sentinel prints `DONE <names>` once all have ended.

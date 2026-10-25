@@ -1,14 +1,16 @@
 # Runs one Pi task on DeepSeek V4.1 Flash through OpenCode Go, inside a Windows job object (run it from the project root):
-#   pi-run.ps1 -Name phase-2.pi-1 -Effort medium
+#   pi-run.ps1 -Name phase-2.pi-1 -Effort medium [-Commit]
 # Works like codex-run.ps1: reads .collab/runs/<Name>.prompt.md; writes <Name>.jsonl (events), <Name>.last.md
 # (final message), <Name>.job (job object name, used by codex-proc.ps1) and <Name>.exit (exit code, written last).
 # Every Pi run is a fresh session, kept in .collab/runs/pi-sessions; its id is in the first line of <Name>.jsonl.
 # Pi exits by itself once its work has settled; the run ends anyway 30 s after that. Then everything it started is
 # killed together, and this script exits with code 0 (Pi's final message ended normally) or 1 (an error such as a
 # usage limit, or no final message).
+# pi-git-guard.ts lets Pi only read with git; -Commit (a run that does a whole phase or the integration) also lets it commit.
 param(
   [Parameter(Mandatory)][string]$Name,
-  [Parameter(Mandatory)][ValidateSet('medium', 'high')][string]$Effort
+  [Parameter(Mandatory)][ValidateSet('medium', 'high')][string]$Effort,
+  [switch]$Commit
 )
 
 # Clear any result of an earlier attempt first, so nothing mistakes it for this run's.
@@ -56,7 +58,8 @@ Set-Content "$runs/$Name.job" $jobName
 # The prompt file comes in on stdin, which Pi puts before the one-line message.
 $env:PI_TELEMETRY = '1'
 $env:PI_SKIP_VERSION_CHECK = '1'
-$exec = "pi --mode json --model opencode-go/deepseek-v4.1-flash --thinking $Effort --session-dir `"$runs/pi-sessions`" `"Do the task above.`""
+$env:COLLAB_PI_GIT = if ($Commit) { 'commit' } else { 'read' }
+$exec = "pi --mode json --model opencode-go/deepseek-v4.1-flash --thinking $Effort --session-dir `"$runs/pi-sessions`" -e `"$PSScriptRoot/pi-git-guard.ts`" `"Do the task above.`""
 $pi = Start-Process cmd.exe -ArgumentList '/d', '/s', '/c', "`"$exec < `"$prompt`" > `"$log`" 2>&1`"" -NoNewWindow -PassThru
 
 function Test-Settled {
