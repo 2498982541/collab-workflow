@@ -295,7 +295,8 @@ const RESERVE = 5          // points of Claude's 5-hour window kept back for the
 const STEP_DEFAULT = 8     // Claude's points per phase, until quota.log has a finished phase to go by
 const PING_EVERY = 50      // minutes between keep-alive turns
 const KEEPALIVE_MAX = 360  // minutes: a longer wait gets only the continue, not keep-alive turns
-const PING_PROMPT = 'collab keep-alive ping: reply with one character only, and call no tools.'
+const PING_MARK = 'collab keep-alive ping:'  // also marks the pings of older runs, which asked for one character
+const PING_PROMPT = `${PING_MARK} reply with one short Chinese line saying what the run waits for and when it continues, and call no tools.`
 const CONTINUE_MARK = 'Continue the collab run in '
 const fwd = p => p.replace(/\\/g, '/')
 const when = sec => {
@@ -377,7 +378,7 @@ function keepAliveTurns(root) {
   const turns = []
   let open = null
   for (const l of text.split('\n')) {
-    const marked = l.includes(PING_PROMPT) || l.includes(CONTINUE_MARK)
+    const marked = l.includes(PING_MARK) || l.includes(CONTINUE_MARK)
     if (!marked && !(open && l.includes('"usage"'))) continue
     let e
     try { e = JSON.parse(l) } catch { continue }
@@ -387,7 +388,7 @@ function keepAliveTurns(root) {
       const blocks = Array.isArray(c) ? c : [{ type: 'text', text: String(c ?? '') }]
       const t = blocks.map(b => (b.type === 'text' ? b.text : '')).join('')
       if (blocks.some(b => b.type === 'tool_result') || t.length > 2000) continue
-      open = { kind: t.includes(PING_PROMPT) ? 'keep-alive' : 'continue', at: Date.parse(e.timestamp) }
+      open = { kind: t.includes(PING_MARK) ? 'keep-alive' : 'continue', at: Date.parse(e.timestamp) }
       turns.push(open)
     } else if (open && e.type === 'assistant' && e.message?.usage) {
       const u = e.message.usage

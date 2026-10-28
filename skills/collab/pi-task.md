@@ -1,6 +1,6 @@
 You are implementing part of a project that another engineer has already specified and planned.
 
-Read first: `.collab/spec.md` (requirements) and `.collab/plan.md` (architecture, contracts, commands, phases).
+Read first: `.collab/spec.md` (requirements) and `.collab/plan.md` (architecture, contracts, commands, environment, phases).
 
 Your task: {{TASK}}
 
@@ -28,6 +28,9 @@ Whole task: you own this task from start to finish.
 
 How to work:
 - Stop any server or other long-running process you started before you finish, including its child processes.
+- Follow plan.md's Environment section: how the network is reached, how to invoke its tools, where secrets live. Never print a secret or commit it.
+- Save screenshots, logs and other scratch files outside the repo, in the system temp directory.
+- Everything listed under `## Servers` in `.collab/progress.md` (ports, containers, databases) belongs to the engineer checking your work: never stop, restart or reuse it.
 - If a port you need is already in use, use another free port instead of killing whatever holds it. Don't hard-code a port the project can't override.
 - Nobody will answer questions. If something is ambiguous, pick the simplest reasonable option and mention it in your final message.
 
