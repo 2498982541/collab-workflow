@@ -134,7 +134,7 @@ If the project has a UI, write the visual skeleton yourself in code:
 
 If the UI draws with WebGL or a canvas (maps, charts, 3D), first find out whether your screenshots can show it as users will see it:
 1. Read the browser's renderer: `const gl = document.createElement('canvas').getContext('webgl'); gl.getParameter(gl.getExtension('WEBGL_debug_renderer_info').UNMASKED_RENDERER_WEBGL)`. SwiftShader or llvmpipe means software rendering: switch to a browser with the GPU (see the Platform table) and read it again.
-2. Check the library too: some fall back to plain tiles or DOM rendering even with a GPU, so custom styles never show (AMap did).
+2. Check the library too: some fall back to plain tiles or DOM rendering even with a GPU, so custom styles never show. Look in its code for the switch that decides. AMap JS API 2.0, for one, treats a Linux desktop browser as platform `other` and SwiftShader as unfit, and refuses WebGL unless `window.forceWebGL = true` is set before it loads: set it in screenshots with Playwright's `addInitScript`, never in the shipped app.
 3. If the real look still can't be rendered here, settle it now, not in acceptance: add a `MANUAL` acceptance check saying what to look at on a real device, log it under "Decisions made without asking", and put it in the report's section on checking it yourself.
 
 Render it with Playwright and look at the screenshots until it looks right, in at most 3 rounds. Codex will copy this style, so it's worth getting right. If it still isn't right after 3 rounds, log what's off under "Decisions made without asking" and move on; acceptance judges the look again.
