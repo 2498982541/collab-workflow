@@ -102,7 +102,15 @@ Otherwise invoke the `grilling` skill and interview the user in Chinese until th
 - UI and visual requirements — look and feel matters, so capture it concretely;
 - numbered acceptance criteria, each with how to check it: a command, or a page and what it should show.
 
-Confirm it while the user is still here: show them, in Chinese, the goal, scope and non-goals, tech stack, and every acceptance criterion. Change spec.md until they confirm.
+Before asking for confirmation, have the spec reviewed (below) and revise spec.md with what you adopt. Then confirm it while the user is still here: show them, in Chinese, a short summary of the feedback and what you adopted or rejected and why, then the goal, scope and non-goals, tech stack, and every acceptance criterion. Change spec.md until they confirm. Every later change to spec.md that the user must confirm gets the same review first.
+
+### Peer review
+
+Get two independent critiques at the same time:
+- **Codex:** a review-only run launched as in "Running Codex", effort `high`, with a new name each time (`spec-review`, `spec-review-2`, `plan-review`). Its prompt gives the paths of the document and of the files it depends on, says not to modify any file, and asks for design flaws, missing or untestable acceptance criteria, simpler alternatives and execution risks, ranked P1/P2, at most 10, in the final message.
+- **A Claude sub-agent** (Agent tool, fresh context), with the same request.
+
+If Codex is out of quota, use the sub-agent alone; don't wait. Scale the request to the task: a short one for a small or exploratory task, the full one for a large one. Merge the feedback yourself: adopt what improves the design, and note what you reject and why.
 
 ## Step 2 - Plan and visual skeleton
 
@@ -126,6 +134,8 @@ Write plan.md:
   - `ui: yes|no`;
   - `parallel: N` (1–5). Codex is slow, so split work that is truly independent across sub-agents. For N > 1, list the subtasks and the files each one owns. No two subtasks may touch the same file; shared contracts come first, or go to the integration step after the sub-agents finish.
   - `agent: codex` (the default) or `agent: pi`, and `pi batch:` when part of a Codex phase goes to Pi; see "Pi for batch work". With `agent: pi`, `parallel` splits the phase across Pi runs the same way.
+
+Have plan.md reviewed as in "Peer review" (`plan-review`) and revise it with what you adopt. The user isn't asked; log what you rejected under "Decisions made without asking".
 
 If the project has a UI, write the visual skeleton yourself in code:
 - design tokens (colors, spacing, type, radii, shadows);

@@ -15,6 +15,8 @@ find_claude() {
     [ -r "/proc/$p/stat" ] || break
     comm=$(cat "/proc/$p/comm")
     case "$comm" in claude*) echo "$p"; return ;; esac
+    # The desktop app's Claude Code is a versioned binary under .claude/remote/ccd-cli, not `claude`.
+    case "$(readlink "/proc/$p/exe" 2>/dev/null)" in */.claude/remote/ccd-cli/*) echo "$p"; return ;; esac
     ppid=$(awk '{ sub(/^.*\) /, ""); print $2 }' "/proc/$p/stat")
     [ "$ppid" -gt 1 ] || break
     p=$ppid
