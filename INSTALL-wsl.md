@@ -18,7 +18,7 @@ This is the install for WSL; INSTALL-windows.md is for Windows, and INSTALL-shar
 | systemd in WSL | `codex-run.sh` runs each Codex run in a systemd user scope, so everything the run started, dev servers included, is killed when it ends |
 | WSL interop | notifications and keep-awake run on the Windows side, through Windows PowerShell |
 | git with a commit identity, Node.js ≥ 22.19 | commits and the helper scripts |
-| Playwright MCP with its own Chromium | Claude screenshots the UI |
+| Playwright MCP with its own Chromium, on an invisible display that reaches the GPU | Claude screenshots the UI, WebGL included |
 | GitHub CLI, logged in | syncing this repo between machines |
 | a status line | shows both quotas and context use, and records quota for the final report and for deciding when to park a run until Claude's quota resets |
 | the `collab` plugin (in `skills/collab`) | asks Haiku what Codex is doing, for the progress row of the status line; loads from the skills folder once function hooks are enabled (section 4) |
@@ -69,13 +69,44 @@ mkdir -p ~/.claude/skills && ln -s "<repo>/skills/<name>" ~/.claude/skills/<name
 
 ## 6. Playwright MCP (user scope)
 
-`claude mcp get playwright` must show the command `npx` with the args `-y @playwright/mcp@latest --browser chromium --headless --isolated --allow-unrestricted-file-access`. The last flag lets it save screenshots anywhere in the project and open `file://` pages.
+Headless Chromium can't use the GPU in WSL: there is no `/dev/dri` render node, so the surfaceless EGL it needs finds no configs, and WebGL falls back to SwiftShader (maps, charts and 3D then render wrongly or not at all). So the MCP runs Chromium headed on an invisible X display, where Mesa's d3d12 driver reaches the Windows GPU.
 
-If the entry is missing or wrong, remove it (`claude mcp remove -s user playwright`) and add it again:
+1. **Xvfb:** `command -v Xvfb` must print a path. If not, ask the user to run `! sudo apt-get install -y xvfb`.
+2. **The display:** `systemctl --user is-active xvfb-gpu` must print `active`. If not, write `~/.config/systemd/user/xvfb-gpu.service`:
+   ```ini
+   [Unit]
+   Description=Invisible X display :99 for GPU-rendered browser automation (used by pw-gpu)
 
-```bash
-claude mcp add -s user playwright -- npx -y @playwright/mcp@latest --browser chromium --headless --isolated --allow-unrestricted-file-access
-```
+   [Service]
+   ExecStart=/usr/bin/Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp
+   Restart=on-failure
+
+   [Install]
+   WantedBy=default.target
+   ```
+   Then run `systemctl --user daemon-reload && systemctl --user enable --now xvfb-gpu`.
+3. **The wrapper:** `command -v pw-gpu` must print `~/.local/bin/pw-gpu`. If not, write this file there and `chmod 755` it:
+   ```sh
+   #!/bin/sh
+   # pw-gpu <command>: run a command whose browsers render WebGL on the GPU without showing a window.
+   # Browsers it starts go to the invisible X display :99 (user service xvfb-gpu), where Mesa's d3d12
+   # driver reaches the Windows GPU. Launch them headed (Playwright: headless: false).
+   # Real headless can't use the GPU in WSL: there is no /dev/dri render node, so the surfaceless EGL
+   # that headless Chromium needs finds no configs and falls back to SwiftShader.
+   systemctl --user is-active --quiet xvfb-gpu || systemctl --user start xvfb-gpu
+   unset WAYLAND_DISPLAY
+   export DISPLAY=:99 GALLIUM_DRIVER=d3d12 PW_GPU=1
+   exec "$@"
+   ```
+   Scripts that need the GPU run as `pw-gpu node <script>` and launch the browser with `headless: false`.
+4. **The MCP entry:** `claude mcp get playwright` must show the command `pw-gpu` with the args `npx -y @playwright/mcp@latest --browser chromium --isolated --allow-unrestricted-file-access` (no `--headless`: the browser draws on the invisible display, so no window appears). The last flag lets it save screenshots anywhere in the project and open `file://` pages.
+
+   If the entry is missing or wrong, remove it (`claude mcp remove -s user playwright`) and add it again:
+
+   ```bash
+   claude mcp add -s user playwright -- pw-gpu npx -y @playwright/mcp@latest --browser chromium --isolated --allow-unrestricted-file-access
+   ```
+5. **Check the GPU** in the next Claude Code session, once the MCP has restarted: navigate the MCP to `about:blank` and evaluate `() => { const gl = document.createElement('canvas').getContext('webgl'); return gl.getParameter(gl.getExtension('WEBGL_debug_renderer_info').UNMASKED_RENDERER_WEBGL) }`. It should name D3D12 and the GPU. SwiftShader or llvmpipe means WSL has no GPU access (check `ls /dev/dxg` and the Windows GPU driver); the MCP still works, without the GPU.
 
 It needs Playwright's own Chromium: `ls ~/.cache/ms-playwright` should list a `chromium-*` folder. If not, run `npx -y playwright install chromium` (no `sudo` needed). If Chromium then can't start because system libraries are missing, ask the user to run `! sudo npx -y playwright install-deps chromium`.
 

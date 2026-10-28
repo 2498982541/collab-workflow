@@ -26,7 +26,7 @@ This skill runs on Windows (Claude Code's Bash tool is Git Bash) or inside WSL; 
 | update Codex | `npm i -g @openai/codex@latest` | `codex update` |
 | start a server | Bash with `run_in_background: true`; its PID is the last column of `netstat -ano \| grep LISTENING \| grep ":<port> "` | `setsid nohup <command> > <log> 2>&1 &` (so it doesn't hold the Bash tool); its PID is `$!` |
 | stop a server | `taskkill //PID <pid> //T //F` | `kill <pid>`, then `kill -9 <pid>` if it's still there a few seconds later |
-| a browser with the GPU (WebGL screenshots) | Playwright's browser with `headless: false` | Playwright Chromium with `headless: false` (it opens a window through WSLg), `env: { ...process.env, GALLIUM_DRIVER: 'd3d12', MESA_D3D12_DEFAULT_ADAPTER_NAME: '<GPU vendor, e.g. NVIDIA>', LD_LIBRARY_PATH: '/usr/lib/wsl/lib' }` and `args: ['--use-angle=gl', '--ignore-gpu-blocklist', '--enable-gpu']`. Headless never gets the GPU here, whatever the flags |
+| a browser with the GPU (WebGL screenshots) | Playwright's browser with `headless: false` | the Playwright MCP, which runs under `pw-gpu` (INSTALL-wsl.md section 6), or a Playwright script run as `pw-gpu node <script>` with `headless: false`. The browser draws on an invisible display, so no window appears. Real headless never gets the GPU in WSL |
 
 `codex-run` and `pi-run` end a run by killing everything the run started: through a Windows job object, or in WSL through a systemd user scope. In WSL, `notify` and `keep-awake` reach Windows through WSL interop. Pi's version is pinned by the install, on both platforms: never update it during a run.
 
