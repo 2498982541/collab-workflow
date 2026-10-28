@@ -16,7 +16,8 @@ function Find-ClaudePid {
   for ($i = 0; $i -lt 15 -and $id; $i++) {
     $p = Get-CimInstance Win32_Process -Filter "ProcessId=$id"
     if (-not $p) { break }
-    if ($p.Name -like 'claude*') { return [int]$p.ProcessId }
+    # The desktop app's Claude Code is a versioned binary under .claude\remote\ccd-cli, not claude.exe.
+    if ($p.Name -like 'claude*' -or $p.ExecutablePath -like '*\.claude\remote\ccd-cli\*') { return [int]$p.ProcessId }
     $id = $p.ParentProcessId
   }
   return 0
